@@ -1,0 +1,91 @@
+{
+  "name": "emulator-view",
+  "displayName": "Android Emulator View",
+  "description": "Mirror and control a headless Android emulator inside a VS Code editor tab.",
+  "version": "0.1.0",
+  "publisher": "codespace",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Testing"
+  ],
+  "keywords": [
+    "android",
+    "emulator",
+    "flutter",
+    "mobile"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:emulatorView.open",
+    "onCommand:emulatorView.restart"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "emulatorView.open",
+        "title": "Open Emulator View",
+        "category": "Android Emulator",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "emulatorView.restart",
+        "title": "Restart Emulator and App",
+        "category": "Android Emulator",
+        "icon": "$(debug-restart)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "emulatorView",
+          "title": "Android Emulator",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "emulatorView": [
+        {
+          "id": "emulatorView.devices",
+          "name": "Devices & AVDs"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "emulatorView.open",
+          "when": "true"
+        },
+        {
+          "command": "emulatorView.restart",
+          "when": "true"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "emulatorView.open",
+          "when": "view == emulatorView.devices",
+          "group": "navigation@1"
+        },
+        {
+          "command": "emulatorView.restart",
+          "when": "view == emulatorView.devices",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "emulatorView.open",
+          "when": "view == emulatorView.devices && viewItem == device",
+          "group": "inline@1"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Android Emulator + Flutter",
+  "containerUser": "codespace",
+  "postStartCommand": "bash /workspaces/ensure-up.sh > /tmp/autostart.log 2>&1",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

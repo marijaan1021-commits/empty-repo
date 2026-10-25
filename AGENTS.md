@@ -1098,3 +1098,92 @@ Then **Developer: Reload Window** → *Android Emulator: Open Emulator View*.
 | `gh codespace ports` | `8091 public`, `9123 private` |
 | Disk free | ~4.8 GB |
 
+
+---
+
+## 18. Fourth follow-up session (2026-10-25) — why the port kept vanishing
+
+This session chased the last real defect: port 8091 kept **disappearing** from the
+forwarded list, and the VS Code webview tab showed "error in emulator window".
+
+### 18.1 The webview path is IMPOSSIBLE for this user — DNS
+
+The user reported `10fitsm...assets.github.dev's server IP address could not be found`.
+
+- `*.assets.github.dev` is where VS Code serves **webview** resources. It resolves
+  publicly (A record exists) but **the user's own resolver cannot resolve it** — the
+  same DNS problem as §16.1, on a second domain.
+- Their browser resolves `*.app.github.dev` (the workbench) fine.
+
+**Conclusion: any VS Code webview is dead on arrival for this user** — the extension
+tab can never render. Do not spend time on `media/view.js`, CSP, or nonces.
+The `emulator-view` extension is still useful as a *frame pump* and for input, but its
+panel will not display.
+
+### 18.2 The Codespaces agent forwards ports ONCE, at container start
+
+This was the real cause of the disappearing port. Timeline evidence:
+
+- `/tmp/containerd.log` and `/tmp/dockerd.log` are dated 07:57 → **the container was
+  recreated at 07:57**, taking the emulator, the app and the viewer with it.
+- The Codespaces port-forwarding agent scans for listening ports **at container start**.
+  It registered 891, 923, 2000 (VS Code internals) and 8099 (the EmbeDroid bridge).
+- The supervisor only starts the viewer **after the emulator finishes booting** (~2 min
+  later) → too late. The port was never forwarded.
+- **Rebinding does not help.** Killing and restarting the viewer at 08:18 did not
+  re-register 8091 after 30 s of polling.
+
+The fix has two parts:
+
+1. **`emuview.py` must be safe to start before the emulator exists.** `capture_loop()`
+   previously *returned* if no device was present, so an early-started viewer would
+   serve empty frames forever. It now polls for a device and starts capturing as soon
+   as one appears.
+2. **The viewer must be bound as early as possible.** `ensure-up.sh` now starts it
+   **before** it starts the supervisor, and `supervisor.sh` keeps the viewers bound
+   independently of the emulator state (the `viewer_up || start_viewer` lines moved
+   out of the `if dev_up` branch).
+
+Also: the `emulator-view` extension now spawns the viewer itself
+(`ensureViewer()` in `extension.js`). Rationale: the agent forwards ports bound by
+processes **inside the VS Code server's process tree** — the EmbeDroid bridge on 8099
+is an extension-host child and *is* forwarded, while a shell-spawned viewer was not.
+Keeping the viewer in that tree makes forwarding reliable.
+
+### 18.3 The extension now opens its own panel and logs to disk
+
+- `activate()` calls `openView()` automatically → the tab appears with **no command to
+  run and no button to click**.
+- `session.start()` is called when the panel is created. It used to be triggered only
+  by a `{"type":"ready"}` message from the webview; since the webview cannot load
+  (§18.1) that message never arrived and the session never started. The capture loop
+  now starts immediately and only *waits* for the device.
+- `extLog()` appends to **`/tmp/emulator-view.log`**. Use this to verify the extension
+  is alive without asking the user: it should show
+  `activated` → `Attached to emulator-5554` → `frame N (320x640, ...B)`.
+
+### 18.4 Verified end state
+
+```
+$ gh codespace ports -c zany-space-carnival-p79jxxwgj4wvfr95j
+  8091  public   https://zany-space-carnival-p79jxxwgj4wvfr95j-8091.app.github.dev
+$ curl https://<cs>-8091.app.github.dev/status
+  {"device": "emulator-5554", "fps": 1.3, "frames": 130}   # HTTP 200, no auth
+```
+
+**This is the URL the user should open:**
+
+```
+https://zany-space-carnival-p79jxxwgj4wvfr95j-8091.app.github.dev/
+```
+
+It is on `app.github.dev` (which their browser resolves) and is **Public** (so no
+GitHub sign-in is needed).
+
+### 18.5 If the port vanishes again
+
+1. `gh codespace ports -c "$CS"` — is 8091 listed at all?
+2. Not listed → the viewer is not bound, or the agent did not scan it. Restart the
+   VS Code server / reload the window so the port is re-detected, then re-run
+   `bash /workspaces/ensure-up.sh` and `bash /workspaces/ensure-public.sh 8091`.
+3. Listed but `private` → `bash /workspaces/ensure-public.sh 8091`.
