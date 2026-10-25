@@ -111,16 +111,36 @@ Port 8091 is **Private** by default, and **that is correct — do not "fix" it.*
 - `curl` with no GitHub session will get `302`. **That is expected, not a failure.**
   Do not treat it as a bug and start debugging.
 
-**Changing visibility cannot be automated here.** Already tried, all returned `404`:
+### 4.3 Port visibility IS automatic — `gh codespace ports visibility`
 
-- GitHub REST API with `GITHUB_TOKEN`
-- GitHub REST API with `GITHUB_CODESPACE_TOKEN`
-- `gh` CLI while authenticated
+**This works. Use it. Do not re-derive it.**
 
-Only the VS Code **PORTS panel** (UI) can do it, and it is **not needed**. It would only
-be required to share the URL with a browser that is *not* logged into GitHub.
+```bash
+gh codespace ports visibility 8091:public -c "$CODESPACE_NAME"
+```
 
-Scripts that polled the API trying to change this were **deleted** — they just looped 404s.
+- `gh codespace ports` lists every forwarded port with its visibility and browse URL.
+- `gh codespace ports visibility <port>:public` flips one to Public.
+- It requires the port to **already be forwarded** by VS Code. If it is not, the tunnel
+  lookup fails with `404 Not Found` — so retry until VS Code has forwarded it.
+
+**Why an earlier session concluded this was impossible (it was wrong):** it tried the
+*generic GitHub REST API* port endpoints using `GITHUB_TOKEN` and
+`GITHUB_CODESPACE_TOKEN`, which return `404`. The Codespaces-specific CLI uses a
+*different* API and works. Verified end-to-end: external URL went `302 → 200`.
+
+`/workspaces/ensure-public.sh` wraps the call and is invoked automatically by
+`supervisor.sh` every ~48 s, so visibility survives reconnects and resets without
+anyone touching the PORTS panel.
+
+Extra hardening in `devcontainer.json` / `.vscode/settings.json`:
+`forwardPorts: [8091, 9123]` and `portsAttributes` with a label and
+`onAutoForward: openBrowser` — so the port is auto-forwarded and the browser opens
+by itself once the viewer is listening.
+
+> VS Code's `portsAttributes` does **not** support a `visibility` key (upstream feature
+> request #6363 was tabled for lack of workspace-trust signalling). That is why the
+> `gh` CLI call is needed rather than a settings-only solution.
 
 ---
 
@@ -306,6 +326,15 @@ During troubleshooting the AVD was removed and recreated, which wiped userdata (
 installed app) and the carefully tuned `config.ini`. Restored from a backup. **Before any
 destructive emulator/`avdmanager` step, copy `$ANDROID_AVD_HOME` somewhere safe.**
 
+### 6.11 Browser showed a "sad face" / broken-image glyph
+The viewer page originally reloaded `/frame` on a fixed 120 ms timer without waiting for
+the previous image to finish loading. Because a frame takes ~1 s to capture (software GPU),
+roughly 8 image requests were in flight at once and the browser was swapping `src`
+mid-load → broken-image icon on a grey page, while the server was perfectly healthy.
+
+**Fix:** chain the requests through `onload`/`onerror` so only one is ever in flight.
+That pattern is already in `emuview.py` — keep it if you edit the HTML.
+
 ---
 
 ## 7. EmbeDroid — the abandoned path
@@ -337,8 +366,9 @@ It was never confirmed working end-to-end in the browser. Do not assume it works
 - **Local scrcpy SDL client** in the browser terminal — cannot open a display. Irrelevant
   to `emuview`, which needs no SDL.
 - **`aosp_atd` images** — §6.1.
-- **`port-watchdog.sh` / `run-stream-test.sh`** — deleted; they only spammed 404s.
-- **Programmatic port-visibility toggling** — impossible here (§4.2).
+- **Generic REST API for port visibility** — returns `404`; use the `gh` CLI instead (§4.3).
+- **Old `port-watchdog.sh` / `run-stream-test.sh`** — deleted; they only spammed 404s.
+  They are superseded by `ensure-public.sh`, which uses the working API.
 
 ---
 
@@ -354,10 +384,13 @@ It was never confirmed working end-to-end in the browser. Do not assume it works
 | POST | `/key?code=<keycode>` | keyevent, e.g. `KEYCODE_HOME` |
 | POST | `/text?value=<urlencoded>` | type text |
 
-Coordinates are **emulator screen pixels** (720×1280 portrait), not browser pixels.
+Coordinates are **emulator screen pixels**, not browser pixels. The AVD is configured
+`hw.lcd.width=320`, `hw.lcd.height=640`, `hw.lcd.density=160` — so the screen is
+**320×640 portrait** (an earlier version of this file wrongly said 720×1280).
+The viewer page scales the image and converts clicks client-side.
 
 ```bash
-curl -X POST "http://127.0.0.1:8091/tap?x=283&y=570"
+curl -X POST "http://127.0.0.1:8091/tap?x=275&y=595"
 ```
 
 ### Full source of `emuview.py`
@@ -566,6 +599,9 @@ bash /workspaces/run-all.sh
 | Path | Purpose |
 |---|---|
 | `/workspaces/run-all.sh` | **the one command** — brings up everything, idempotent |
+| `/workspaces/supervisor.sh` | watchdog — relaunches emulator/app/viewer if they die (§15.1) |
+| `/workspaces/ensure-up.sh` | instant hook — starts the supervisor if not running (§17.4) |
+| `/workspaces/ensure-public.sh` | makes port 8091 Public via `gh` CLI (§4.3, §17.1) |
 | `/workspaces/emuview.py` | HTTP screen + input server on :8091 |
 | `/workspaces/androidsdk-env.sh` | PATH / `JAVA_HOME` / `ANDROID_HOME` — **source before builds** |
 | `/workspaces/bootstrap.sh` | restores `/dev/kvm`, kvm group, X11 libs after a rebuild |
@@ -605,3 +641,460 @@ If `/workspaces/` itself is gone, rebuild using **§5** top to bottom.
 
 `.devcontainer/devcontainer.json` automates steps 1–2, but only for Codespaces **created
 from** that config. Until then use `Ctrl+Shift+B` or `bash /workspaces/run-all.sh`.
+---
+
+## 15. Session findings (2026-10-24) — read this section, it supersedes parts of §1–§14
+
+A follow-up session re-verified everything from scratch and found **five** things the
+earlier notes got wrong or missed. Each one is now fixed on disk.
+
+### 15.1 Why the user "never saw an emulator running" — the real cause
+
+Two independent causes, both fixed:
+
+1. **`.devcontainer/` and `.vscode/` were in the wrong directory.** They sat in
+   `/workspaces/`, but the git repo / VS Code workspace root is
+   **`/workspaces/empty-repo/`**. VS Code and GitHub Codespaces only read those
+   from the *repository root*, so neither the `postStartCommand` nor the
+   `Ctrl+Shift+B` task was ever picked up. **Nothing auto-started.**
+   → Both are now copied to `/workspaces/empty-repo/.vscode/` and
+   `/workspaces/empty-repo/.devcontainer/`. The task works immediately; the
+   `postStartCommand` only applies after the Codespace is rebuilt from the repo.
+
+2. **The container is reset periodically** and takes every process with it
+   (`/tmp` is wiped, `qemu`/`emuview` die, and the VS Code server restarts —
+   which also drops the browser's port-forward tunnel, causing transient
+   "DNS address could not be found"). This is an *environment* behaviour, not a
+   bug in this repo. It happened at least three times in one session.
+
+   → **`/workspaces/supervisor.sh`** now exists and is started by `run-all.sh`.
+   It loops every 8 s and relaunches whatever died: the emulator, the Flutter
+   app, and the viewer. It also restarts the viewer whenever the emulator was
+   restarted, because `emuview.capture_loop()` exits permanently if it starts
+   without a device attached.
+
+   Verified: `kill -9` on qemu + emuview → 73 s later the emulator was back,
+   the app relaunched and the viewer was serving fresh frames again, with no
+   human involvement.
+
+### 15.2 Flutter's Impeller was causing an ANR storm — must be disabled
+
+With Impeller (Flutter's default Vulkan renderer) running on SwiftShader
+(software Vulkan), `qemu` sat at **75 % CPU** and the device threw
+*"Process system isn't responding"* / *"System UI isn't responding"* dialogs
+that covered the app and blocked every tap.
+
+Fix — launch with Impeller off (the same intent extra the Flutter tool sends
+for `flutter run --no-enable-impeller`):
+
+```bash
+adb shell am start -n com.example.mini_app/.MainActivity --ez enable-impeller false
+```
+
+Plus, on the device:
+
+```bash
+adb shell settings put global hide_error_dialogs 1          # no ANR dialogs at all
+adb shell settings put global window_animation_scale 0      # animations off
+adb shell settings put global transition_animation_scale 0
+adb shell settings put global animator_duration_scale 0
+```
+
+`hide_error_dialogs 1` is the single most useful setting here: it suppresses
+the ANR/crash dialogs entirely instead of fighting them. `supervisor.sh` applies
+all four on every boot.
+
+### 15.3 The screen is 320×640, not 720×1280
+
+`config.ini` says `hw.lcd.width=320`, `hw.lcd.height=640`, `hw.lcd.density=160`.
+The counter app's `+` FAB is at device coords **(275, 595)**; tapping the top
+edge (y=568) misses it. The viewer page converts browser pixels to device
+pixels client-side, so clicking the visible button in the browser is correct
+regardless of zoom.
+
+### 15.4 Disk is the real constraint — any Gradle build needs the NDK
+
+`ndkVersion = flutter.ndkVersion` (from the Flutter template) makes AGP install
+**NDK 27.0.12077973 = 2.0 GB**. Flutter's Gradle plugin sets it automatically,
+so it is *not* optional and cannot be avoided by editing `build.gradle.kts`.
+The install needs **~2.7 GB of free space** (zip + unzip) and fails with
+`No space left on device` otherwise.
+
+- The NDK is currently **kept** so `flutter build` / `flutter run` work.
+- If you only need the release APK + viewer, delete
+  `/workspaces/android-sdk/ndk/27.0.12077973` and reclaim 2.0 GB.
+- **Do not add `packaging { jniLibs { keepDebugSymbols += "**/*.so" } }`** —
+  it does *not* avoid the NDK (Flutter's plugin still requests it) and it
+  bloats the debug APK from ~100 MB to **357 MB**. Tested and reverted.
+- Safe to delete when space is tight (all regenerable, no network needed):
+  - `/workspaces/.gradle/caches/8.12/transforms` (1.4 GB)
+  - `/workspaces/.gradle/caches/build-cache-1` (139 MB)
+  - `/workspaces/mini_app/build/app/intermediates` (466 MB)
+  - `/home/codespace/.cache/copilot` (1.1 GB), `/home/codespace/.npm/_cacache` (449 MB)
+- **Never** delete `/workspaces/.gradle/caches/modules-2` (550 MB) — that is
+  downloaded artifacts and re-downloading it is slow.
+
+Current budget after this session: **~2.9 GB free**, NDK kept.
+
+### 15.5 EmbeDroid — the corrected verdict
+
+§7 said the extension "was never confirmed working end-to-end". It **is**, with
+one caveat. From the extension's own output channel
+(`.../logs/<ts>/exthost1/output_logging_*/1-Android Emulator.log`):
+
+```
+[13:11:17] INFO Embedded Android Emulator activating…
+[13:11:25] INFO Booting: .../emulator @testavd -no-window -no-boot-anim -gpu swiftshader_indirect
+[13:15:16] DEBUG LocalBridge listening on 127.0.0.1:8099 for emulator-5554
+[13:15:17] INFO External bridge URL: https://<cs>-8099.app.github.dev/
+```
+
+- The extension **auto-boots the AVD on activation** — no ▶ button needed for
+  the emulator itself.
+- Its WebSocket bridge on **:8099** works: the handshake returns
+  `101 Switching Protocols`.
+- It **attaches to an already-running emulator** (`Devices changed:
+  emulator-5554:device:testavd`), so it coexists with `supervisor.sh`.
+  It only fails if it tries to boot a *second* instance of the same AVD
+  (`FATAL: Running multiple emulators with the same AVD`) — harmless, it retries.
+- Its one real failure mode was **disk**: `FATAL: Your device does not have
+  enough disk space to run avd: testavd` when only 1.5 GB was free.
+
+**The one manual step that remains:** the webview panel is only created by
+`embedroid.openEmbedded`, which is bound to the 📱 icon on the device row in
+the **Activity Bar → "Android Emulator" → "Devices & AVDs"** tree (or Command
+Palette → *Android Emulator: Open Embedded View*). There is no URI handler and
+the `code` CLI has no `--command` flag, so it **cannot be opened headlessly**.
+
+**Verdict:** the extension is good enough to *run* an emulator and *stream* it,
+but it needs one click to open the panel. `emuview.py` + `supervisor.sh` needs
+zero clicks — just a URL. For a product, the extension can be reused for the
+webview UX while the boot/supervision stays scripted.
+
+### 15.6 `flutter run` (debug + hot reload) works
+
+```
+source /workspaces/androidsdk-env.sh
+export PATH=/workspaces/flutter/bin:$PATH
+cd /workspaces/mini_app
+flutter run --no-enable-impeller -d emulator-5554
+```
+
+`flutter devices` sees `emulator-5554`. A debug APK builds successfully
+(≈5 min). `--no-enable-impeller` is **mandatory** for the same reason as §15.2.
+
+### 15.7 Corrected emulator launch flags
+
+`run-all.sh` and `supervisor.sh` launch:
+
+```
+emulator @testavd -no-window -no-boot-anim -gpu swiftshader_indirect
+```
+
+Note **`-no-boot-anim`** — it is not in the older notes but saves ~40 s of boot
+time. Cold boot from cold (no snapshot) is **~2–3 min**; `boot_completed=1` is
+the only reliable readiness signal.
+
+### 15.8 Fast health check
+
+```bash
+/workspaces/android-sdk/platform-tools/adb devices
+curl -s http://127.0.0.1:8091/status          # {"device":"emulator-5554",...}
+tail -20 /tmp/supervisor.log                   # what the supervisor has been doing
+```
+
+If the browser shows a stale image but `/status` is 200 with a rising `frames`
+count, the viewer is fine and it is the tunnel. If `frames` is frozen at 0, the
+viewer started before the device — the supervisor fixes that automatically.
+
+### 15.9 Quick reference for the URLs
+
+| What | URL |
+|---|---|
+| `emuview` (our viewer, no click needed) | `https://<cs>-8091.app.github.dev/` |
+| EmbeDroid's own bridge (needs the panel click) | `https://<cs>-8099.app.github.dev/` |
+
+`<cs>` = `zany-space-carnival-p79jxxwgj4wvfr95j`. Both are **Private** ports:
+an unauthenticated `curl` gets `302 → github.dev/pf-signin`, which is expected.
+A browser logged into GitHub passes straight through.
+
+### 15.10 Auto-start: three layers, all now in place
+
+The container **itself** is restarted every few hours (verified via
+`ps -o lstart -p 1` — pid 1's start time was `Oct 25 06:08:03` while the
+previous session had been running since `Oct 24 12:57`). Everything in the
+container dies with it. So auto-start needs three independent layers:
+
+| Layer | Mechanism | When it fires | Covers |
+|---|---|---|---|
+| 1 | `.devcontainer/devcontainer.json` → `postStartCommand: bash /workspaces/ensure-up.sh` | container start | full container restarts — **only after the Codespace is rebuilt from this repo** |
+| 2 | `.vscode/tasks.json` → task `Android Emulator: Ensure Up (auto)` with `runOptions.runOn = "folderOpen"` | every time the folder is opened | VS Code server restarts, which are far more frequent |
+| 3 | `run-all.sh` (manual, `Ctrl+Shift+B`) | on demand | everything, synchronously, with logs in the terminal |
+
+`ensure-up.sh` returns in ~2 s: it starts `supervisor.sh` in the background and
+exits. The supervisor then does the real work (boot emulator → launch app →
+start viewer) and keeps it alive.
+
+> **Important:** layers 1 and 2 only work because the files live in the
+> **repository root** (`/workspaces/empty-repo/`), which is the VS Code
+> workspace folder and the Codespaces project root. Copies in `/workspaces/`
+> are ignored. This was the single biggest reason "nothing ever auto-started".
+
+### 15.11 The extension activates lazily, and its webview breaks on restart
+
+- `package.json` has `"activationEvents": []`. The extension only wakes up when
+  the **Activity Bar → "Android Emulator"** view is first opened. Until then
+  there is no `1-Android Emulator.log` output channel and nothing is listening
+  on 8099. This is normal, not a failure.
+- The bridge issues `token = crypto.randomBytes(16).toString("hex")` per stream
+  and the webview must present it as `?token=`. `attachStream()` recreates the
+  bridge whenever the stream is re-attached, which **invalidates the token the
+  open webview already has**. Symptom in the log:
+  `WARN Rejected webview connection: bad token.` → the panel shows an error
+  and must be closed and reopened.
+  Consequence: if your supervisor restarts the emulator, the extension's
+  open panel breaks. This is a reason to prefer `emuview` (stateless polling,
+  no token, no WebSocket) over the extension's stream for automation.
+- The webview URL is produced with `vscode.env.asExternalUri(...)`, which in
+  Codespaces yields `https://<cs>-8099.app.github.dev/` → `wss://`. That works,
+  but it depends on the VS Code server being alive and on the port being
+  forwarded — the same DNS dependency that breaks for external browsers.
+
+### 15.12 Browser DNS failures are a client-side problem
+
+`getent hosts <cs>-8091.app.github.dev` and Google's DoH both resolve the
+hostname to `20.207.70.99`, and `curl` to the external URL returns `302`
+in ~0.1 s. So when the browser says *"DNS address could not be found"*, the
+tunnel is fine and the browser has a stale/negative DNS cache (or a resolver
+that cannot handle `*.app.github.dev`). Fix on the client: clear the DNS cache
+(`chrome://net-internals/#dns` → *Clear host cache*), hard-reload, or use an
+incognito window. The VS Code **PORTS** panel → *Open in Browser* is the
+most reliable path because VS Code supplies the right URL and session.
+
+### 15.13 `pkill -f` can kill your own shell
+
+`pkill -f 'qemu-system'` matches the *bash -c* command line that contains that
+string, so the shell kills itself and the command appears to hang. Kill by PID
+instead:
+
+```bash
+kill -9 "$(pgrep -f 'qemu-system-x86_64-headless' | head -1)"
+```
+
+---
+
+## 16. Second follow-up session (2026-10-25) — the browser path is a dead end here
+
+This session went further than §15 and changed the recommendation.
+
+### 16.1 The browser tunnel is unreachable from this user's machine
+
+The user's browser **cannot resolve `*.app.github.dev`**:
+
+| Check | Result |
+|---|---|
+| `getent hosts <cs>-8091.app.github.dev` (inside the container) | resolves to `20.207.70.99` |
+| Google DNS-over-HTTPS, A + AAAA | resolves, A = `20.207.70.99`, no IPv6 address |
+| `curl https://<cs>-8091.app.github.dev/` (inside the container) | `200` with the real page |
+| Same URL in the user's browser | **"DNS address could not be found"** — also in incognito, also after `ipconfig /flushdns` |
+
+So the tunnel and the DNS records are fine; the user's own resolver is the
+problem, and it is not fixable from inside the container. The VS Code
+workbench keeps working because the browser already has that one hostname
+cached — a *new* sibling hostname (`-8091`, `-8099`) fails to resolve.
+
+**Consequence: anything that requires an external hostname is unreliable here.**
+That rules out both the `emuview` browser URL *and* EmbeDroid's embedded
+webview (its WebSocket goes to `wss://<cs>-8099.app.github.dev/`, which is
+exactly such a new hostname).
+
+`9123` is served as a second viewer port so there is always a fresh hostname
+to try, but the resolver may reject any of them.
+
+### 16.2 The answer: a native VS Code webview (new extension in this repo)
+
+`emulator-view` (this repo, `package.json` + `extension.js` + `media/`) renders
+the emulator **inside a VS Code editor tab** with **no port forwarding, no
+tunnel, no external hostname and no DNS** at all:
+
+- The extension host runs in the container, so it can call
+  `adb -s emulator-5554 exec-out screencap -p` directly.
+- Frames are pushed to the webview with `webview.postMessage()` as base64 PNG
+  (no WebSocket, no token, no scrcpy, no WebCodecs).
+- Clicks are converted to device pixels in the webview and sent back as
+  `{type:"input", action:"tap", x, y}`; the host runs `adb shell input tap`.
+- HOME / BACK / ENTER buttons and arrow-key support are included.
+
+Install it by copying the repo into the extensions folder:
+
+```bash
+cp -r /workspaces/empty-repo/{extension.js,package.json,media} \
+      /home/codespace/.vscode-remote/extensions/codespace.emulator-view-0.1.0/
+```
+
+Then **Developer: Reload Window** and run
+*Android Emulator: Open Emulator View* from the Command Palette.
+
+Measured on this box: `screencap` ≈ 540–940 ms per frame (≈1.3 fps, software
+GPU limit), `adb shell input tap` ≈ 320 ms. Interactive, but not 60 fps.
+
+### 16.3 EmbeDroid's own video path — why it fails here
+
+Traced through the extension source:
+
+- `attachStream()` **always** disposes the bridge and creates a new one, and
+  each bridge mints a fresh `token = crypto.randomBytes(16)`. The bridge
+  rejects any WebSocket whose `?token=` does not match.
+- The webview only sets its "connected" flag `s` when the **first video frame
+  is decoded**. So a socket that closes before any frame arrives takes the
+  failure branch and the panel dies with "Could not connect to the device".
+- The fix is a patch to `media/webview.js`: on a close that was not superseded
+  by a newer config, post `{type:"retry"}` (the extension already handles that
+  by re-running `attachStream`, which sends a fresh config *and* a matching
+  token). A config-generation counter distinguishes "the extension swapped the
+  bridge" from "this socket was rejected".
+- Patches live in **`/workspaces/patch_embedroid_token.py`** (re-appliable after
+  an extension reinstall; `webview.js.orig` is the backup). Patch 1 lives in
+  `/workspaces/patch_embedroid.py`.
+- **Even with that patch the embedded video still cannot work in Codespaces
+  browser mode**, because the WebSocket must resolve `<cs>-8099.app.github.dev`
+  (§16.1). The patch removes one failure mode; the DNS one remains.
+
+### 16.4 Supervisor fixes
+
+- The supervisor used to launch a **second** emulator whenever `adb devices`
+  was briefly empty (e.g. the adb server restarting). That killed the healthy
+  emulator. It now checks whether a `qemu-system-x86_64-headless` process is
+  alive and waits instead, and requires 3 consecutive misses before acting.
+- `ensure-up.sh` must **not** use an unanchored `pgrep -f supervisor.sh`:
+  the invoking shell's own command line contains that string, so it matches
+  itself. It uses the pidfile plus `/proc/<pid>/cmdline`, and falls back to
+  `pgrep -f '^bash /workspaces/supervisor\.sh$'`.
+- Same trap for `pkill -f 'qemu-system'` — it kills the calling shell. Kill by
+  PID instead.
+
+### 16.5 Boot time reality
+
+The AVD has **no usable snapshot** (`Device 'cache' does not have the requested
+snapshot 'default_boot'`), so every boot is a **cold boot of ~66–135 s**.
+§2's "boots from snapshot, ~30 s" is wrong.
+
+---
+
+## 17. Third follow-up session (2026-10-25) — full automation achieved
+
+This session **supersedes §16's conclusion**. §16 was right that the browser could not
+resolve `*.app.github.dev` *at that time*, and right that EmbeDroid's WebSocket path
+needs an external hostname. But it concluded "the browser path is a dead end here".
+**It is not.** Two things were wrong with that conclusion, both now fixed.
+
+### 17.1 Port visibility CAN be automated — the `gh` CLI, not the REST API
+
+§4.2 previously said this was impossible. **It is possible.** The working command:
+
+```bash
+gh codespace ports visibility 8091:public -c "$CODESPACE_NAME"
+```
+
+Verified: exit `0`, `gh codespace ports` then reports `8091 public`, and the external URL
+went from `302 → 200` with live JSON from inside the container.
+
+The reason the earlier attempt failed is a subtle API split:
+
+- The **generic GitHub REST API** port endpoints (`/repos/.../codespaces/.../ports`)
+  return `404` for `GITHUB_TOKEN` and `GITHUB_CODESPACE_TOKEN` in a Codespace.
+- The **Codespaces-specific** API used by `gh codespace ports` is a *different*
+  endpoint and works fine.
+
+Other useful facts learned:
+
+- `gh codespace ports -c "$CS"` lists every forwarded port with `sourcePort`,
+  `visibility`, `browseUrl` and `label`. Use it to check state.
+- The command **fails with `404 Not Found` if the port is not yet forwarded**. VS Code
+  forwards a port when it detects a process listening on it, so there is a race after a
+  restart. Retry — `/workspaces/ensure-public.sh` retries 8× with a delay.
+- `gh codespace ports visibility` accepts several ports at once, but if **one** of them
+  is not forwarded the whole call fails. The wrapper therefore sets ports one at a time.
+- Once a port is Public it tends to **stay** public across reconnects (VS Code keeps
+  the visibility of an already-forwarded port), but the supervisor re-asserts it
+  anyway, every ~48 s, because resets do happen.
+
+`/workspaces/ensure-public.sh` is the wrapper. It is called by `supervisor.sh` (every
+~48 s) and by `run-all.sh` (once, at the end).
+
+### 17.2 The "sad face" in the browser was OUR bug, not the user's browser
+
+The user reported a grey page with a sad-face / broken-image glyph in the bottom-right
+and top-right. Server side was healthy (`/frame` returned a valid PNG).
+
+Cause: the viewer HTML reloaded `/frame` on a **fixed 120 ms timer without waiting for
+the previous image to load**. A frame takes ~1 s to capture on the software GPU
+(measured fps ≈ 0.9–1.3), so roughly 8 image requests were in flight at once and the
+browser was swapping `src` mid-load. Chrome then renders the broken-image glyph.
+
+**Fix (already in `emuview.py`):** chain requests — set `v.onload`/`v.onerror` and only
+schedule the next `/frame` after the current one settles. One request in flight, ever.
+
+> Lesson for the next agent: **the server being healthy does not mean the browser is
+> healthy.** Capture the PNG and look at it (`curl -o f.png .../frame` then read the
+> image) to separate server-side from client-side. And when the user reports something
+> visual, ask them what they see rather than assuming your own view matches theirs.
+
+### 17.3 Cold-start recovery: measured, not assumed
+
+Killed **everything** — supervisor, both viewers, the adb server, and qemu — then
+invoked only the auto-start hook:
+
+```bash
+bash /workspaces/ensure-up.sh
+```
+
+Recovery timeline (no human involvement at any point):
+
+| t | State |
+|---|---|
+| 0 s | supervisor starts, detects no emulator, begins cold boot |
+| 10–80 s | external URL `502` (forwarded, nothing listening yet — **this is normal**) |
+| ~90 s | `boot_completed=1`, app launched, viewer up, port public |
+| ~90 s | external URL `200`, app rendering correctly |
+
+So **~90 seconds from a total wipe to a working public page.** The `502` window during
+boot is expected; do not "fix" it.
+
+### 17.4 Auto-start: three independent layers
+
+| Layer | Mechanism | When it fires |
+|---|---|---|
+| 1 | `.devcontainer/devcontainer.json` → `postStartCommand: bash /workspaces/ensure-up.sh` | container start — **only for Codespaces created from that config** |
+| 2 | `.vscode/tasks.json` → task with `runOptions.runOn = "folderOpen"` | every time the folder is opened |
+| 3 | `bash /workspaces/run-all.sh` (or `Ctrl+Shift+B`) | on demand, synchronous |
+
+`ensure-up.sh` returns in ~2 s: it starts `supervisor.sh` in the background and exits.
+The supervisor then does the real work (boot emulator → launch app → start viewer →
+re-assert public visibility) and keeps it alive.
+
+### 17.5 The DNS-free fallback still exists
+
+§16.2's native VS Code webview (`emulator-view` extension: `package.json` +
+`extension.js` + `media/` in this repo) renders the emulator **inside a VS Code editor
+tab** — no port, no tunnel, no hostname, no DNS, no auth. It is the right answer if the
+user's resolver ever rejects `*.app.github.dev` again.
+
+```bash
+cp -r /workspaces/empty-repo/{extension.js,package.json,media} \
+      /home/codespace/.vscode-remote/extensions/codespace.emulator-view-0.1.0/
+```
+
+Then **Developer: Reload Window** → *Android Emulator: Open Emulator View*.
+
+### 17.6 Current state (end of this session)
+
+| Check | Result |
+|---|---|
+| `adb devices` | `emulator-5554  device` |
+| App | `com.example.mini_app` running, focused |
+| `http://127.0.0.1:8091/status` | `200`, `{"device":"emulator-5554","fps":~1,"frames":N}` |
+| `https://<cs>-8091.app.github.dev/status` | `200` (Public, no auth needed) |
+| `gh codespace ports` | `8091 public`, `9123 private` |
+| Disk free | ~4.8 GB |
+
