@@ -13,8 +13,14 @@ set -u
 
 ADB=/workspaces/android-sdk/platform-tools/adb
 EMU=/workspaces/android-sdk/emulator/emulator
-APK=/workspaces/mini_app/build/app/outputs/flutter-apk/app-release.apk
-PKG=com.example.mini_app
+# The AVD lives outside $HOME - the emulator has to be told where to look.
+export ANDROID_AVD_HOME=/workspaces/android-avd
+# The app under test - optional. Without APP_PKG the stack just runs the
+# emulator and shows the launcher.
+APP_DIR=${APP_DIR:-/workspaces/mini_app}
+APK=${APP_APK:-$APP_DIR/build/app/outputs/flutter-apk/app-release.apk}
+PKG=${APP_PKG:-}
+APP_ACTIVITY=${APP_ACTIVITY:-.MainActivity}
 VIEW_PORT=8091
 CS=${CODESPACE_NAME:-$(env | grep '^CODESPACE_NAME=' | cut -d= -f2)}
 
@@ -58,11 +64,13 @@ $ADB shell settings put global window_animation_scale 0 >/dev/null 2>&1
 $ADB shell settings put global transition_animation_scale 0 >/dev/null 2>&1
 $ADB shell settings put global animator_duration_scale 0 >/dev/null 2>&1
 
-# The app is optional. After the test app was removed there is no APK and
-# nothing installed - the emulator then just shows the launcher.
+# The app is optional. With no APP_PKG there is nothing to manage - the
+# emulator then just shows the launcher.
 APP_PRESENT=0
-if [ -f "$APK" ] || $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"; then
-  APP_PRESENT=1
+if [ -n "$PKG" ]; then
+  if [ -f "$APK" ] || $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"; then
+    APP_PRESENT=1
+  fi
 fi
 
 if [ "$APP_PRESENT" = "1" ]; then
@@ -82,10 +90,10 @@ if [ "$APP_PRESENT" = "1" ]; then
     say "app already running"
   else
     $ADB shell am force-stop $PKG >/dev/null 2>&1
-    $ADB shell am start -n $PKG/.MainActivity --ez enable-impeller false >/dev/null 2>&1
+    $ADB shell am start -n $PKG$APP_ACTIVITY --ez enable-impeller false >/dev/null 2>&1
   fi
 else
-  say "no app installed (APK missing at $APK) - showing the launcher"
+  say "no app configured - showing the launcher"
 fi
 
 # Dismiss any stale ANR dialogs left over from a previous run.

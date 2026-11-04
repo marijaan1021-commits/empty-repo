@@ -30,6 +30,17 @@ warn() { echo "  WARN  $*"; }
 # ---------------------------------------------------------------- 1. scripts
 say "linking the repo into $WS"
 mkdir -p "$WS"
+# Remove links to scripts that no longer exist in the repository (a deleted
+# script must not stay behind as a dangling symlink).
+for link in "$WS"/*; do
+  [ -L "$link" ] || continue
+  target=$(readlink "$link")
+  case "$target" in
+    "$REPO"/scripts/*)
+      [ -e "$target" ] || { rm -f "$link"; ok "removed stale link $(basename "$link")"; }
+      ;;
+  esac
+done
 for f in "$REPO"/scripts/*; do
   name=$(basename "$f")
   case "$name" in
@@ -48,7 +59,10 @@ for f in "$REPO"/scripts/*; do
 done
 
 # ---------------------------------------------------------------- 2. the app
-# /workspaces/mini_app is the path the supervisor installs the APK from.
+# /workspaces/mini_app is the path the supervisor installs the APK from. There
+# is no app in the repository by default - the stack runs without one and then
+# shows the launcher. Drop a Flutter project into app/ (or point APP_DIR
+# somewhere else) and this link picks it up.
 say "linking the app"
 APP_TARGET="$REPO/app"
 if [ -d "$APP_TARGET" ]; then
@@ -56,7 +70,12 @@ if [ -d "$APP_TARGET" ]; then
   ln -s "$APP_TARGET" "$WS/mini_app"
   ok "$WS/mini_app -> app/"
 else
-  warn "no app/ directory in the repository - the emulator will show the launcher"
+  # A stale link to a deleted app/ directory would point nowhere.
+  if [ -L "$WS/mini_app" ] && [ ! -d "$WS/mini_app" ]; then
+    rm -f "$WS/mini_app"
+  fi
+  ok "no app/ in the repository - the emulator will show the launcher"
+  echo "        to add one:  create it under app/ and run this script again"
 fi
 
 # ---------------------------------------------------------------- 3. the extension

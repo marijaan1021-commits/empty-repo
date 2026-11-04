@@ -15,9 +15,24 @@ set -u
 
 ADB=/workspaces/android-sdk/platform-tools/adb
 EMU=/workspaces/android-sdk/emulator/emulator
-APK=/workspaces/mini_app/build/app/outputs/flutter-apk/app-release.apk
-PKG=com.example.mini_app
-ACT=$PKG/.MainActivity
+# The AVD lives outside $HOME. The emulator looks for AVDs in
+# $ANDROID_AVD_HOME, $ANDROID_SDK_HOME/avd and $HOME/.android/avd - in that
+# order - so without this the emulator aborts with "Unknown AVD name
+# [testavd]", no matter which shell the script was started from.
+export ANDROID_AVD_HOME=/workspaces/android-avd
+# The app under test. There is none by default: the stack runs fine without an
+# app and then shows the launcher. Point it at yours and the stack installs,
+# launches and keeps it in the foreground:
+#
+#   APP_PKG=com.example.my_app \
+#   APP_APK=/workspaces/mini_app/build/app/outputs/flutter-apk/app-release.apk \
+#   bash /workspaces/emu.sh
+APP_DIR=${APP_DIR:-/workspaces/mini_app}
+APK=${APP_APK:-$APP_DIR/build/app/outputs/flutter-apk/app-release.apk}
+PKG=${APP_PKG:-}
+# The launcher activity, relative to the package id.
+APP_ACTIVITY=${APP_ACTIVITY:-.MainActivity}
+ACT=$PKG$APP_ACTIVITY
 PORT=8091
 ALT_PORT=9123
 SUP=/workspaces/supervisor.sh
@@ -53,11 +68,11 @@ viewer_up()  { curl -sf -m 3 -o /dev/null "http://127.0.0.1:$PORT/status" 2>/dev
 dev_present(){ timeout 20 $ADB devices 2>/dev/null | grep -qE '^emulator-[0-9]+'; }
 dev_up()     { timeout 20 $ADB devices 2>/dev/null | grep -qE '^emulator-[0-9]+[[:space:]]+device'; }
 dev_booted() { [ "$(timeout 20 $ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; }
-app_up()     { [ -n "$(timeout 20 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; }
-app_front()  { timeout 20 $ADB shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus.*$PKG"; }
-# The app is optional. After the test app was removed there is no APK and
-# nothing installed, and the device just shows the launcher.
-app_present(){ [ -f "$APK" ] || timeout 20 $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"; }
+app_up()     { [ -n "$PKG" ] && [ -n "$(timeout 20 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; }
+app_front()  { [ -n "$PKG" ] && timeout 20 $ADB shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus.*$PKG"; }
+# The app is optional. With no APP_PKG set there is nothing to manage and the
+# device simply shows the launcher.
+app_present(){ [ -n "$PKG" ] || return 1; [ -f "$APK" ] || timeout 20 $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"; }
 
 # True when the screen shows something.
 #
@@ -132,6 +147,11 @@ tune_device() {
 }
 
 start_app() {
+  if [ -z "$PKG" ]; then
+    ok "no app configured - the launcher is showing (set APP_PKG to manage one)"
+    return 0
+  fi
+
   if ! app_present; then
     ok "no app installed (nothing to launch)"
     return 0
@@ -153,7 +173,7 @@ start_app() {
     # ~75% CPU, which makes SystemUI/system_server ANR.
     timeout 60 $ADB shell am start -n "$ACT" --ez enable-impeller false >/dev/null 2>&1
     for _ in $(seq 1 15); do app_up && break; sleep 2; done
-    app_up && ok "app launched" || warn "app did not start (check: $ADB logcat -d | grep -i mini_app)"
+    app_up && ok "app launched" || warn "app did not start (check: $ADB logcat -d | grep -i ${PKG##*.})"
   fi
 
   # Wait for the app to actually draw. A just-started Flutter app on a
@@ -236,8 +256,10 @@ cmd_status() {
   if app_present; then
     if app_up; then ok "app: pid $(timeout 20 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')"; else err "app not running"; fi
     app_front && ok "app in foreground" || warn "app is in the background"
+  elif [ -n "$PKG" ]; then
+    err "app $PKG is neither installed nor built"
   else
-    ok "no app installed (launcher is showing)"
+    ok "no app configured (the launcher is showing)"
   fi
   if screen_has_content; then
     ok "screen: $(python3 /workspaces/screen-check.py </tmp/emu-screen.png 2>/dev/null)"

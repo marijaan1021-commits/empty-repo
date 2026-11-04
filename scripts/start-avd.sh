@@ -9,6 +9,8 @@ set -u
 export JAVA_HOME=/workspaces/jdk17
 export ANDROID_HOME=/workspaces/android-sdk
 export ANDROID_SDK_ROOT=/workspaces/android-sdk
+# The AVD lives outside $HOME - the emulator needs to be told where to look.
+export ANDROID_AVD_HOME=/workspaces/android-avd
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
 AVD=testavd

@@ -10,8 +10,6 @@ app/.flutter-plugins-dependencies
 *.keystore
 key.properties
 app/android/key.properties
-callnote-release.jks
-key.properties
 *.zip
 
 # not part of this project - leftovers from other work in the same workspace

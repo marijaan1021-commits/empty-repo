@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Create the release keystore for the CallNote APK.
+# Create the release keystore for an app's APK.
 #
-#   bash scripts/create-keystore.sh
+#   bash scripts/create-keystore.sh [name]
 #
 # Why this exists: the Flutter template signs release builds with the DEBUG
 # key, and the debug keystore lives in the container's overlay layer - it
@@ -13,11 +13,12 @@ set -u
 
 WS=/workspaces
 KS_DIR=$WS/.keystore
-KS=$KS_DIR/callnote-release.jks
+ALIAS=${1:-app}
+NAME=$ALIAS-release
+KS=$KS_DIR/$NAME.jks
 PASS_FILE=$KS_DIR/.pass
-ALIAS=callnote
 DAYS=10950          # 30 years
-DNAME="CN=CallNote, OU=CallNote, O=CallNote, L=, ST=, C=US"
+DNAME="CN=$ALIAS, OU=$ALIAS, O=$ALIAS, L=, ST=, C=US"
 
 say() { echo; echo "== $* =="; }
 ok()  { echo "  ok    $*"; }
@@ -51,7 +52,7 @@ else
     -keystore "$KS" -alias "$ALIAS" \
     -keyalg RSA -keysize 4096 -validity "$DAYS" \
     -storepass "$PASS" -keypass "$PASS" \
-    -dname "CN=CallNote, OU=CallNote, O=CallNote, C=US"
+    -dname "CN=$ALIAS, OU=$ALIAS, O=$ALIAS, C=US"
   chmod 600 "$KS"
   ok "created $KS (RSA 4096, alias $ALIAS, $DAYS days)"
 fi

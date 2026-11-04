@@ -9,7 +9,7 @@
 
 ## 0. Read this first — you are probably in the wrong file
 
-This file is the **history**: 32 sessions, every measurement, every dead end.
+This file is the **history**: 34 sessions, every measurement, every dead end.
 It is 130 KB and it is auto-loaded into your context, so it costs you ~35 000
 tokens before you read a word.
 
@@ -17,13 +17,21 @@ tokens before you read a word.
 |---|---|
 | **build the project from scratch in a fresh Codespace** | **`START-HERE.md`** ← the procedure, with every command |
 | understand the app (features, permissions, timing) | `CALLNOTE.md` |
-| find out *why* something was done a certain way | this file (§1–§32) |
+| find out *why* something was done a certain way | this file (§1–§34) |
 
 **The short version** (if you only read one line):
 
 ```bash
-bash scripts/install-toolchain.sh && bash scripts/install-stack.sh && bash /workspaces/emu.sh
+bash scripts/install-toolchain.sh && bash scripts/install-stack.sh && bash scripts/create-keystore.sh
+bash /workspaces/emu.sh
 ```
+
+**There is no app in the repository** (it was removed on 2026-11-04, §35).
+The stack runs the emulator, the viewer and the supervisor — bring your own
+app with `APP_PKG` / `APP_DIR` (see `START-HERE.md` §3 Step 3).
+
+The build comes **before** the emulator starts: a 3-ABI Gradle build with the
+emulator running gets the daemon OOM-killed on this box (§31.4, §34.2).
 
 ---
 
@@ -40,6 +48,11 @@ They wanted to:
    reloading windows, or toggling ports.
 4. As the test subject, a **minimal lightweight Flutter app**.
 
+> Update (2026-11-04, §35): the app that was used as the test subject —
+> CallNote — has been **removed from the repository**. What is left is the
+> rig: the emulator, the viewer, the watchdog and the build tools, ready for
+> whatever app comes next.
+
 Initially they asked for the **EmbeDroid** VS Code extension to do this. It was installed,
 patched six times, and still abandoned (see §7). The working solution is a
 **~180-line Python HTTP server** written from scratch that does the same job with no
@@ -51,21 +64,33 @@ extension and no manual steps.
 
 ## 2. TL;DR — first 60 seconds
 
-If `/workspaces/` still exists (normal restart/stop), run exactly this:
+**If `/workspaces/` is empty (a fresh Codespace), follow `START-HERE.md` §3** —
+the toolchain has to be installed first:
 
 ```bash
-bash /workspaces/run-all.sh
+bash scripts/install-toolchain.sh && bash scripts/install-stack.sh && bash scripts/create-keystore.sh
+bash /workspaces/emu.sh
+```
+
+**There is no app in the repository** (it was removed on 2026-11-04, §35).
+The stack runs the emulator, the viewer and the supervisor — bring your own
+app with `APP_PKG` / `APP_DIR` (see `START-HERE.md` §3 Step 3).
+
+**If `/workspaces/` still exists (normal restart/stop), run exactly this:**
+
+```bash
+bash /workspaces/emu.sh
 ```
 
 Then open in a browser **already logged into GitHub**:
 
 ```
-https://zany-space-carnival-p79jxxwgj4wvfr95j-8091.app.github.dev/
+https://<codespace-name>-8091.app.github.dev/
 ```
 
 You get a live, clickable screenshot of the emulator with HOME / BACK / ENTER buttons.
 
-`run-all.sh` is **idempotent** — running it when everything is already up finishes in ~2
+`emu.sh` is **idempotent** — running it when everything is already up finishes in ~20
 seconds and changes nothing. Run it after every Codespace restart. Nothing survives a
 restart except files on disk; that is the only reason the stack ever needs starting.
 
@@ -631,9 +656,7 @@ bash /workspaces/run-all.sh
 | `/workspaces/bootstrap.sh` | restores `/dev/kvm`, kvm group, X11 libs after a rebuild |
 | `/workspaces/build.sh` | builds the release APK |
 | `/workspaces/start-avd.sh` | emulator-only launcher (`stop` subcommand too) |
-| `/workspaces/mini_app/` | Flutter app source |
-| `/workspaces/mini_app/lib/main.dart` | default counter demo — the tap target |
-| `/workspaces/mini_app/android/gradle.properties` | memory-constrained Gradle settings |
+| `/workspaces/mini_app/` | the app, if one is linked in (see §35) |
 | `/workspaces/android-avd/` | AVD home (`testavd`) |
 | `/workspaces/flutter/` | Flutter 3.35.1 SDK |
 | `/workspaces/android-sdk/` | Android SDK, emulator, platform-tools |
@@ -2985,3 +3008,258 @@ loop and waits up to 2 minutes for the receiver.
 
 It has now interrupted the test twice. It is the environment, not the code
 (§15.1). Anything that must survive a reset has to live on `/workspaces`.
+
+---
+
+## 34. Eighteenth session (2026-11-04) — a truly fresh Codespace, and the AVD bug that sixteen sessions had hidden
+
+This session started from a **completely empty** `/workspaces`: only the
+repository was there. No SDK, no AVD, no JDK, no Flutter, no extension. It is
+the first time the "rebuild from nothing" path in §33 has actually been
+exercised end to end — and it found a bug that had been invisible for
+sixteen sessions.
+
+### 34.1 The bug: the emulator could never find the AVD
+
+The emulator was launched by every script and it died immediately:
+
+```
+INFO  | Android emulator version 37.2.13.0 (build_id 16740729)
+ERROR | Unknown AVD name [testavd], use -list-avds to see valid list.
+ERROR | HOME is defined but there is no file testavd.ini in $HOME/.android/avd
+```
+
+The emulator looks for AVDs in `$ANDROID_AVD_HOME`, `$ANDROID_SDK_HOME/avd`
+and `$HOME/.android/avd`, in that order. The AVD lives in
+`/workspaces/android-avd` — **none of the three pointed at it**.
+
+`install-toolchain.sh` had a wrapper for exactly this, and the wrapper was
+**broken in two ways at once**:
+
+```bash
+mkdir -p "$SDK/emulator"
+if [ ! -f "$SDK/emulator/emulator" ]; then      # (a) the guard is never true
+  cat >"$SDK/emulator/emulator" <<'WRAP'         # (b) ... and .emulator-real
+  ...                                             #     is never created
+  exec "$D/.emulator-real" "$@"
+WRAP
+```
+
+* **(a)** `sdkmanager` installs the emulator package **with the real ELF
+  binary at `$SDK/emulator/emulator`** — and it runs *before* this block. So
+  the file always exists, the guard is always false, and the wrapper is never
+  written.
+* **(b)** Even if it were written, it execs `.emulator-real`, which nothing
+  in the repository ever creates.
+
+**Why sixteen sessions never saw it:** every earlier session ran the scripts
+from a shell that had `source /workspaces/androidsdk-env.sh` (which exports
+`ANDROID_AVD_HOME=/workspaces/android-avd`) — or the container's own
+environment had it. The documented one-liner in `START-HERE.md` §2 is
+`bash /workspaces/emu.sh`, which does **not** source that file. The bug only
+appears when the scripts are started from a plain shell, i.e. exactly what a
+new agent does after reading the README.
+
+**The fix (in the repository, since it is the source of truth):**
+
+| File | Change |
+|---|---|
+| `scripts/emu.sh` | `export ANDROID_AVD_HOME=/workspaces/android-avd` |
+| `scripts/supervisor.sh` | same |
+| `scripts/start-avd.sh` | same |
+| `scripts/run-all.sh` | same |
+| `scripts/install-toolchain.sh` | the broken wrapper block → create `~/.android/avd` → `/workspaces/android-avd` |
+| `scripts/bootstrap.sh` | same link, re-created after every container rebuild (`$HOME` is ephemeral) |
+| `scripts/ensure-up.sh` | same link, before the supervisor starts the emulator |
+
+**Why the symlink is needed on top of the variable:** the emulator writes its
+discovery files into the **AVD home** — `running/pid_<pid>.ini` with the
+rotating gRPC token — while `extension.js:361` and `grpc-grab.js:27` read
+them from `~/.android/avd/running`. With only the variable the token file
+moves to `/workspaces/android-avd/running` and **both readers miss it** — the
+extension silently falls back to `adb screencap` (~800 ms per frame instead of
+~25 ms). With the symlink both paths are the same directory; verified:
+
+```
+$ stat -c '%i %n' /workspaces/android-avd/running ~/.android/avd/running
+1708474 /workspaces/android-avd/running
+1708474 /home/codespace/.android/avd/running
+```
+
+**The one-line check** for a future session:
+
+```bash
+emulator -list-avds        # must print: testavd
+```
+
+`bootstrap.sh` now ends with exactly that check.
+
+### 34.2 What the fresh install actually cost (measured)
+
+| Step | Time | Note |
+|---|---|---|
+| `install-toolchain.sh` | ~4 min | JDK 17 + cmdline-tools + SDK + system image + AVD + Flutter clone |
+| `install-stack.sh` | seconds | 19 script symlinks + the extension |
+| `create-keystore.sh` | seconds | RSA 4096, alias `callnote` |
+| first release build | **693 s** | the Dart SDK, the NDK (2.0 GB), CMake, build-tools 35 and platform 36 are all downloaded during it |
+| `emu.sh` cold start | ~3 min | emulator boot 60–140 s + the app install |
+| `callnote-fgs-test.sh all` | ~4 min | it reboots the device |
+
+Disk: 18 GB free → 9.3 GB free after the toolchain and the build. The
+toolchain is ~8 GB, the build adds ~3.7 GB.
+
+**The build order matters:** build **before** the emulator is started. A
+3-ABI Gradle build with the emulator running gets the daemon OOM-killed on
+this box (§31.4). `START-HERE.md` §3 Step 3/Step 4 have been swapped to
+reflect that, and §6.16 already said it.
+
+### 34.3 The shortcuts that worked
+
+* **`emulator -list-avds`** is the fastest way to tell "the emulator is
+  broken" from "the emulator cannot find the AVD". It prints nothing in a
+  fraction of a second.
+* **Read the frame as an image.** `curl -s http://127.0.0.1:8091/frame -o f.png`
+  and then open `f.png` — the permission dialog and the app's home screen
+  were immediately obvious, where `dumpsys` would only have given a package
+  name.
+* **`screen-check.py`** on the frame (`320x640 levels=150`) tells a blank
+  screen from a real one without decoding it by eye.
+* **A real tap proved the input path**: one `adb shell input tap 160 358` on
+  the "ALLOW" button dismissed the notification dialog and the app went on
+  to its home screen — the whole permission flow works with no human.
+* **The extension had already started the viewer**, so `emu.sh` reported
+  `viewer already listening on :8091`. That is normal, not a duplicate: the
+  viewer has to live in the extension host's process tree for the Codespaces
+  port agent to forward the port (§20.5, §22.1).
+* **`verify.sh`** gave the eight checkpoints in one run, and
+  `callnote-fgs-test.sh all` gave 16/16 — including the reboot case, which is
+  the one that proves the boot receiver.
+
+### 34.4 A second, smaller bug: the supervisor logged an error every tick
+
+`supervisor.sh` calls `/workspaces/tailscale-up.sh`, which is **not in the
+repository** — it only exists on the machine that runs the Notedog bridge.
+Every tick wrote
+
+```
+bash: /workspaces/tailscale-up.sh: No such file or directory
+```
+
+into `/tmp/supervisor.log`. `ensure-up.sh` already guarded it with
+`[ -f ... ]`; the supervisor did not. It is now guarded the same way.
+
+### 34.5 The state at the end of the session
+
+```
+$ bash /workspaces/emu.sh status
+  ok    emulator: emulator-5554	device
+  ok    boot_completed=1
+  ok    app: pid 1989
+  ok    screen: 320x640 levels=247
+  ok    viewer: {"device": "emulator-5554", "fps": 8.3, "frames": 2775, "source": "grpc"}
+  ok    supervisor: pid 37508
+        8091  public  https://symmetrical-space-lamp-5v5gwwr4gp693v94v-8091.app.github.dev
+
+$ bash /workspaces/verify.sh          # 8/8 checkpoints
+$ bash /workspaces/callnote-fgs-test.sh all
+== result: 16 passed, 0 failed
+```
+
+The APK built from the clean checkout matches §33.2 exactly: 46 116 469 bytes,
+`native-code: 'arm64-v8a' 'armeabi-v7a' 'x86_64'`,
+`application-label:'CallNote'`, signer `CN=CallNote`.
+
+### 34.6 Summary for the next agent
+
+```bash
+# a fresh Codespace, in this order
+bash scripts/install-toolchain.sh     # ~4 min
+bash scripts/install-stack.sh
+bash scripts/create-keystore.sh
+bash scripts/build-callnote.sh        # DETACHED, ~12 min the first time
+bash /workspaces/emu.sh                # installs + launches the app
+bash /workspaces/verify.sh             # 8 checkpoints
+bash /workspaces/callnote-fgs-test.sh all   # 16 checks, ~4 min
+```
+
+**If the emulator does not come up, check this first:**
+
+```bash
+emulator -list-avds        # empty => the AVD home link is missing
+bash scripts/bootstrap.sh  # re-creates ~/.android/avd
+```
+
+---
+
+## 35. Nineteenth session (2026-11-04) — the CallNote app is removed; the repo is the rig only
+
+The user asked for the repository to keep **only the setup**: the emulator
+stack, the scripts and the documentation. CallNote was a demo/example, and a
+new application is coming. Everything that belongs to the app was deleted.
+
+### 35.1 What was deleted
+
+| Path | What it was |
+|---|---|
+| `app/` | the whole CallNote Flutter project (Dart sources, 8 Kotlin files, the Android manifest, the tests) |
+| `CALLNOTE.md` | the app's documentation (25 KB) |
+| `scripts/build-callnote.sh` | the CallNote release build |
+| `scripts/callnote-fgs-test.sh` | the 16-check functional test suite |
+| `scripts/seed-contacts.sh` | seeded Batman / Joker / Alfred into the emulator's address book |
+| `README.txt` | the generated release README (regenerated by `package-release.sh`) |
+
+The history in this file keeps the story of the app — that is what a history
+file is for — but there is no app in the tree any more.
+
+### 35.2 The stack is now app-agnostic
+
+The three runtime scripts used to hardcode `PKG=com.example.mini_app` and
+`APK=/workspaces/mini_app/build/.../app-release.apk`. They now read the
+environment, with **no app as the default**:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `APP_DIR` | where the project lives | `/workspaces/mini_app` |
+| `APP_PKG` | the package id to install and launch | *(empty — no app)* |
+| `APP_APK` | the APK to install | `$APP_DIR/build/app/outputs/flutter-apk/app-release.apk` |
+| `APP_ACTIVITY` | the launcher activity | `.MainActivity` |
+
+`emu.sh`, `supervisor.sh`, `run-all.sh` and `verify.sh` all use them.
+`app_present()` returns false when `APP_PKG` is empty, so the supervisor does
+not try to manage a package that does not exist — the same pattern §29 used
+when the "hello" demo was removed.
+
+`install-stack.sh` links `/workspaces/mini_app` → `app/` **only when that
+directory exists**, and otherwise says how to add one.
+
+`scripts/build.sh` was already generic (it takes the project directory), so it
+replaced `build-callnote.sh` unchanged. `scripts/create-keystore.sh` now takes
+the app name as an argument instead of hardcoding `callnote`.
+
+### 35.3 The reason the ordering matters
+
+`emu.sh` used to install the APK itself from a hardcoded path. With the app
+gone, the install step had to become conditional — otherwise the stack would
+try to install a package that cannot exist and report a failure on every
+start. The same applies to the supervisor's "app is dead → relaunch it" rule:
+it is now gated on `APP_PKG`.
+
+### 35.4 What is left in the repository
+
+```
+scripts/          the stack (18 scripts, none of them app-specific)
+extension.js      the VS Code emulator view
+media/            its webview
+avd/              the tuned AVD config
+.vscode/ .devcontainer/   auto-start
+START-HERE.md     the procedure
+README.md         the front page
+AGENTS.md         this history
+```
+
+### 35.5 For the next session
+
+The rig is done and verified (§34.5): `verify.sh` 8/8, the functional suite
+16/16, the public URL HTTP 200. The next piece of work is a new application —
+put it in `app/`, or set `APP_DIR` / `APP_PKG`, and read §3 Step 3 of
+`START-HERE.md`.

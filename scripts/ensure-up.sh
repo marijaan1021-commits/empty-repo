@@ -9,6 +9,21 @@ SUP=/workspaces/supervisor.sh
 PIDFILE=/tmp/supervisor.pid
 
 # ---------------------------------------------------------------------------
+# The AVD home link.
+#
+# The AVD lives on the persistent volume, but $HOME/.android does not survive a
+# container rebuild. The emulator only looks for an AVD in $ANDROID_AVD_HOME or
+# $HOME/.android/avd, so without this link it aborts with
+# "Unknown AVD name [testavd]" and the stack never comes up. It has to be
+# restored before the supervisor launches the emulator.
+# ---------------------------------------------------------------------------
+mkdir -p "$HOME/.android"
+if [ ! -e "$HOME/.android/avd" ] && [ ! -L "$HOME/.android/avd" ]; then
+  ln -s /workspaces/android-avd "$HOME/.android/avd"
+  echo "AVD home linked: $HOME/.android/avd -> /workspaces/android-avd"
+fi
+
+# ---------------------------------------------------------------------------
 # Bind the viewer port FIRST, before anything else and unconditionally.
 #
 # The Codespaces port-forwarding agent scans for listening ports ONCE, at

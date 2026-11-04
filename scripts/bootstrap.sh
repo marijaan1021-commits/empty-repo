@@ -42,9 +42,25 @@ echo "==> 3. /dev/kvm permissions"
 sudo chmod 666 /dev/kvm 2>/dev/null && echo "    set to 666"
 ls -l /dev/kvm
 
+echo "==> 4. AVD home link"
+# The AVD itself lives on the persistent volume (/workspaces/android-avd), but
+# $HOME does not survive a container rebuild. The emulator only finds an AVD
+# through $ANDROID_AVD_HOME or $HOME/.android/avd, so the link has to be put
+# back after every rebuild - without it the emulator says
+# "Unknown AVD name [testavd]" and never boots.
+mkdir -p "$HOME/.android"
+if [ -L "$HOME/.android/avd" ]; then
+  echo "    already present -> $(readlink "$HOME/.android/avd")"
+elif [ -e "$HOME/.android/avd" ]; then
+  echo "    WARNING: $HOME/.android/avd exists and is not a symlink"
+else
+  ln -s /workspaces/android-avd "$HOME/.android/avd"
+  echo "    $HOME/.android/avd -> /workspaces/android-avd"
+fi
+
 echo
 echo "==> verifying"
-/workspaces/android-sdk/emulator/emulator -list-avds
+ANDROID_AVD_HOME=/workspaces/android-avd /workspaces/android-sdk/emulator/emulator -list-avds
 # Reading raw bytes from /dev/kvm fails with EINVAL even when the open() itself
 # succeeds, so check for "Permission denied" rather than testing the exit code.
 if sg kvm -c 'head -c 4 /dev/kvm' 2>&1 | grep -qi "permission denied"; then

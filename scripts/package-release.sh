@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Package the CallNote release for a real phone.
+# Package an app's release APK for a real phone.
+#
+#   bash /workspaces/package-release.sh [app-dir] [package-id] [name]
+#
+# Defaults:
+#   app-dir    /workspaces/mini_app
+#   package-id com.example.mini_app
+#   name       the app's directory name
 #
 # Every run produces files with a timestamp in the name, so no build ever
 # overwrites another one - you can tell which APK is on the phone by its
 # name alone:
 #
-#   callnote-release-20261029-152500.apk
-#   callnote-release-20261029-152500.zip   (apk + README.txt)
+#   myapp-release-20261029-152500.apk
+#   myapp-release-20261029-152500.zip   (apk + README.txt)
 #
-# The stable names (callnote-release.apk / .zip) are kept as copies of the
+# The stable names (<name>-release.apk / .zip) are kept as copies of the
 # newest build, so the paths in the docs always work.
 #
 #   package-release.sh            package what is already built
@@ -18,24 +25,34 @@ set -u
 # The repository root. Resolved through any symlink so the script works both
 # as scripts/package-release.sh and as /workspaces/package-release.sh.
 SELF=$(readlink -f "$0")
-APP_DIR=$(dirname "$(dirname "$SELF")")
-BUILT_APK="$APP_DIR/app/build/app/outputs/flutter-apk/app-release.apk"
+REPO=$(dirname "$(dirname "$SELF")")
+
+BUILD=0
+if [ "${1:-}" = "--build" ]; then
+  BUILD=1
+  shift
+fi
+
+APP_DIR=${1:-/workspaces/mini_app}
+PKG=${2:-com.example.mini_app}
+NAME=${3:-$(basename "$APP_DIR")}
+BUILT_APK="$APP_DIR/build/app/outputs/flutter-apk/app-release.apk"
 STAMP=$(date +%Y%m%d-%H%M%S)
-OUT_APK="$APP_DIR/callnote-release-$STAMP.apk"
-OUT_ZIP="$APP_DIR/callnote-release-$STAMP.zip"
-README="$APP_DIR/README.txt"
+OUT_APK="$REPO/$NAME-release-$STAMP.apk"
+OUT_ZIP="$REPO/$NAME-release-$STAMP.zip"
+README="$REPO/README.txt"
 
 say() { echo "== $*"; }
 
-if [ "${1:-}" = "--build" ]; then
+if [ "$BUILD" = "1" ]; then
   say "stopping the emulator (a 3-ABI Gradle build OOMs with it running)"
   bash /workspaces/emu.sh stop >/dev/null 2>&1
   sleep 3
-  say "building (this takes 2-7 minutes)"
+  say "building (this takes 2-12 minutes)"
   (
     source /workspaces/androidsdk-env.sh
     export PATH=/workspaces/flutter/bin:$PATH
-    cd "$APP_DIR/app"
+    cd "$APP_DIR"
     flutter build apk --release --target-platform android-arm,android-arm64,android-x64
   )
   rc=$?
@@ -66,10 +83,10 @@ DN=$(/workspaces/android-sdk/build-tools/34.0.0/apksigner verify --print-certs "
       | grep -m1 "Signer #1 certificate DN" | sed 's/.*DN: //')
 
 cat >"$README" <<EOF
-CallNote - a reminder for the calls you care about
-================================================
+$NAME
+$(printf '=%.0s' $(seq 1 ${#NAME}))
 
-callnote-release-$STAMP.apk
+$NAME-release-$STAMP.apk
   sha256 : $SHA256
   sha1   : $SHA1
   size   : $SIZE bytes
@@ -78,7 +95,7 @@ callnote-release-$STAMP.apk
 
 Install
 -------
-  adb install -r callnote-release-$STAMP.apk
+  adb install -r $NAME-release-$STAMP.apk
 
 or copy the apk to the phone and open it (you need "install from unknown
 sources" for your file manager).
@@ -88,29 +105,22 @@ any phone.
 
 First start
 -----------
-1. Allow the permissions when the app asks: notifications, contacts, the
-   call log and phone state. The reminder is a notification - without the
-   notification permission the phone stays silent. Phone state is what lets
-   the app know the caller's number while the call is still ringing.
-2. Add a note: pick a contact, type what you want to be reminded about and
-   switch the note on.
-3. That is all. The app watches the calls and tells you when one of the
-   contacts with a note calls - within a few tens of milliseconds.
-
-The app makes no network request.
+Allow the permissions the app asks for. Without them it cannot do what it is
+supposed to do - a notification app stays silent without the notification
+permission.
 EOF
 
-rm -f "$APP_DIR/callnote-release.zip"
-(cd "$APP_DIR" && zip -q -X "$OUT_ZIP" "callnote-release-$STAMP.apk" README.txt)
+rm -f "$REPO/$NAME-release.zip"
+(cd "$REPO" && zip -q -X "$OUT_ZIP" "$NAME-release-$STAMP.apk" README.txt)
 ZIPSHA=$(sha256sum "$OUT_ZIP" | cut -d' ' -f1)
 
 # the stable names are copies of the newest build
-cp "$OUT_APK" "$APP_DIR/callnote-release.apk"
-cp "$OUT_ZIP" "$APP_DIR/callnote-release.zip"
+cp "$OUT_APK" "$REPO/$NAME-release.apk"
+cp "$OUT_ZIP" "$REPO/$NAME-release.zip"
 
 say "done"
 echo "  apk : $OUT_APK"
 echo "        sha256 $SHA256"
 echo "  zip : $OUT_ZIP"
 echo "        sha256 $ZIPSHA"
-echo "  latest also at callnote-release.apk / callnote-release.zip"
+echo "  latest also at $NAME-release.apk / $NAME-release.zip"

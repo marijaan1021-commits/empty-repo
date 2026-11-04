@@ -17,8 +17,15 @@ set -u
 
 ADB=/workspaces/android-sdk/platform-tools/adb
 EMU=/workspaces/android-sdk/emulator/emulator
-APK=/workspaces/mini_app/build/app/outputs/flutter-apk/app-release.apk
-PKG=com.example.mini_app
+# The AVD lives outside $HOME, so the emulator has to be told where to look -
+# otherwise it aborts with "Unknown AVD name [testavd]".
+export ANDROID_AVD_HOME=/workspaces/android-avd
+# The app under test. Empty by default - the stack then only runs the
+# emulator and the viewer. Set APP_PKG (and APP_APK) to have the supervisor
+# install, launch and keep an app alive.
+APP_DIR=${APP_DIR:-/workspaces/mini_app}
+APK=${APP_APK:-$APP_DIR/build/app/outputs/flutter-apk/app-release.apk}
+PKG=${APP_PKG:-}
 VIEW_PORT=8091
 ALT_PORT=9123
 LOG=/tmp/supervisor.log
@@ -38,12 +45,12 @@ dev_up() { timeout 20 $ADB devices 2>/dev/null | grep -qE '^emulator-[0-9]+[[:sp
 # first one over the AVD lock. Any 'emulator-XXXX' line means an emulator exists.
 dev_present() { timeout 20 $ADB devices 2>/dev/null | grep -qE '^emulator-[0-9]+'; }
 dev_booted() { [ "$(timeout 20 $ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; }
-app_up() { [ -n "$(timeout 20 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; }
-# Is there an app to manage at all? The test app is optional: after it has
-# been removed there is no APK on disk and nothing installed on the device.
-# The stack then simply shows the Android home screen and must NOT keep trying
-# to install or launch a package that does not exist.
+app_up() { [ -n "$PKG" ] && [ -n "$(timeout 20 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; }
+# Is there an app to manage at all? Without APP_PKG there is none: the stack
+# simply runs the emulator and shows the launcher, and must NOT keep trying to
+# install or launch a package that does not exist.
 app_present() {
+  [ -n "$PKG" ] || return 1
   [ -f "$APK" ] && return 0
   timeout 20 $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"
 }
@@ -51,7 +58,7 @@ app_present() {
 # swipe on the launcher does that). Then it looks healthy but nothing is
 # visible on the screen. Check what is actually in the foreground.
 app_foreground() {
-  timeout 20 $ADB shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus.*$PKG"
+  [ -n "$PKG" ] && timeout 20 $ADB shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus.*$PKG"
 }
 viewer_up() { curl -sf -m 3 -o /dev/null "http://127.0.0.1:$VIEW_PORT/status" 2>/dev/null; }
 alt_viewer_up() { curl -sf -m 3 -o /dev/null "http://127.0.0.1:$ALT_PORT/status" 2>/dev/null; }
@@ -97,7 +104,7 @@ start_app() {
   # Impeller off: it runs on SwiftShader (software Vulkan) and pins qemu at ~75%
   # CPU, which makes SystemUI/system_server ANR. Same extra flutter uses for
   # `flutter run --no-enable-impeller`.
-  timeout 60 $ADB shell am start -n "$PKG/.MainActivity" --ez enable-impeller false >/dev/null 2>&1
+  timeout 60 $ADB shell am start -n "$PKG$APP_ACTIVITY" --ez enable-impeller false >/dev/null 2>&1
   say "app launched"
 }
 tune_device() {
@@ -171,7 +178,7 @@ recover_screen() {
   timeout 30 $ADB shell dumpsys deviceidle disable >/dev/null 2>&1
   if app_present; then
     timeout 30 $ADB shell am force-stop "$PKG" >/dev/null 2>&1
-    timeout 60 $ADB shell am start -n "$PKG/.MainActivity" --ez enable-impeller false >/dev/null 2>&1
+    timeout 60 $ADB shell am start -n "$PKG$APP_ACTIVITY" --ez enable-impeller false >/dev/null 2>&1
     say "app relaunched"
   else
     say "no app installed - woke the display only"
@@ -221,10 +228,11 @@ while true; do
     # the launcher - launching a missing package every 8 s would be noise.
     #
     # Only a DEAD process is restarted. An app that is merely in the background
-    # is left alone: CallNote has to keep running while a call is in progress,
-    # and pulling it to the foreground would hide the dialer.
+    # is left alone: an app that reacts to calls has to keep running while a
+    # call is in progress, and pulling it to the foreground would hide the
+    # dialer.
     if app_present && ! app_up; then
-      timeout 30 $ADB shell am start -n "$PKG/.MainActivity" --ez enable-impeller false >/dev/null 2>&1
+      timeout 30 $ADB shell am start -n "$PKG$APP_ACTIVITY" --ez enable-impeller false >/dev/null 2>&1
       app_up || start_app
     fi
 
@@ -262,13 +270,18 @@ while true; do
   fi
 
   # ---- keep Tailscale (and therefore Notedog) alive ----------------------
-  if tailscale_daemon_down; then
-    say "tailscaled is down - restarting"
-    bash /workspaces/tailscale-up.sh >>"$LOG" 2>&1
-  elif [ $((tick % 10)) -eq 0 ]; then
-    # The phone's Tailscale IP changes if it re-authenticates; re-resolve it
-    # now and then so the MCP server never points at a stale address.
-    bash /workspaces/tailscale-up.sh >>"$LOG" 2>&1
+  # tailscale-up.sh is not part of the repository - it only exists on the
+  # machine that runs the Notedog bridge. Skip it when it is missing instead
+  # of writing an error to the log on every single tick.
+  if [ -f /workspaces/tailscale-up.sh ]; then
+    if tailscale_daemon_down; then
+      say "tailscaled is down - restarting"
+      bash /workspaces/tailscale-up.sh >>"$LOG" 2>&1
+    elif [ $((tick % 10)) -eq 0 ]; then
+      # The phone's Tailscale IP changes if it re-authenticates; re-resolve it
+      # now and then so the MCP server never points at a stale address.
+      bash /workspaces/tailscale-up.sh >>"$LOG" 2>&1
+    fi
   fi
 
   # ---- keep the viewer port PUBLIC -------------------------------------

@@ -5,28 +5,32 @@
 > — no SDK, no emulator, no AVD, no installed extension.
 >
 > **This file is the procedure.** Follow it top to bottom and you end up with
-> a running Android emulator, the CallNote app on it, and a live screen in the
-> browser. Every command is copy-pasteable and every step has a check.
+> a running Android emulator and a live screen in the browser. Every command is
+> copy-pasteable and every step has a check.
 >
-> Read the other two documents when you need the *why*:
-> * `CALLNOTE.md` — the app: features, architecture, permissions, the timing
->   problem and how it was solved.
+> Read the other document when you need the *why*:
 > * `AGENTS.md` — the full session-by-session history, measurements and every
->   dead end. 130 KB. Do not read it unless something below fails.
+>   dead end. 140 KB. Do not read it unless something below fails.
 
 ---
 
 ## 1. What this project is
 
-Two things live in this repository:
+**The rig**: a headless Android 14 emulator inside a GitHub Codespace, with a
+live view of its screen and working touch input. It is ready for *any* app.
 
 | Piece | Where | What it is |
 |---|---|---|
-| **the emulator stack** | `scripts/` | a headless Android 14 emulator inside the Codespace, with a live view of its screen and working touch input |
-| **the app under test** | `app/` | **CallNote** — attach a note to a contact, get it as a notification the instant that contact calls |
+| **the emulator stack** | `scripts/` | the emulator, the watchdog, the HTTP viewer, the build and packaging tools |
+| **the VS Code extension** | `extension.js`, `media/`, `package.json` | renders the emulator's screen **inside a VS Code tab** |
 
-Plus a VS Code extension (`extension.js`, `media/`, `package.json`) that renders
-the emulator's screen **inside a VS Code tab**.
+There is **no application in this repository** — the app under test is
+yours. Drop one in (see §3 Step 3) or point the scripts at one that is
+already on the machine:
+
+```bash
+APP_PKG=com.example.my_app APP_APK=/path/to/app-release.apk bash /workspaces/emu.sh
+```
 
 The goal: everything runs on the phone you hold. The emulator is the
 development and test rig; the release APK is built for a real device.
@@ -49,18 +53,24 @@ development and test rig; the release APK is built for a real device.
 ## 2. The one-line version
 
 ```bash
-bash scripts/install-toolchain.sh   # SDK + emulator + AVD + JDK 17 + Flutter  (~15 min)
+bash scripts/install-toolchain.sh   # SDK + emulator + AVD + JDK 17 + Flutter  (~4 min)
 bash scripts/install-stack.sh       # link this repo into /workspaces + install the extension
 bash /workspaces/emu.sh             # start the emulator                     (~2 min)
 ```
 
-Then open the URL it prints. Then:
+Then open the URL it prints. Then build **your** app and point the stack at
+it — see §3 Step 3.
 
-```bash
-bash scripts/build-callnote.sh     # build the APK  (detached! ~5 min)
-adb install -r app/build/app/outputs/flutter-apk/app-release.apk
-bash /workspaces/callnote-fgs-test.sh all   # 13 checks
-```
+> **Build before you start the emulator.** A 3-ABI Gradle build with the
+> emulator running gets the daemon OOM-killed on this 2-vCPU / 7.8 GB / no-swap
+> box (§6.16). On a fresh machine there is nothing to stop yet, so building
+> first is both simpler and safer. If the emulator is already up:
+> `bash /workspaces/emu.sh stop` → build → `bash /workspaces/emu.sh`.
+
+> **The first build is slow (~12 min), the later ones are ~5 min.** The extra
+> time is the one-off downloads: the Dart SDK (207 MB), the NDK (2.0 GB) and
+> CMake (61 MB), which AGP installs by itself, plus build-tools 35 and
+> platform 36. Nothing has to be installed by hand.
 
 **From now on, one command:**
 
@@ -109,6 +119,7 @@ What it does, and how to do it by hand if you prefer:
 | cmdline-tools | `https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip` → `/workspaces/android-sdk/cmdline-tools/latest` | |
 | packages | `sdkmanager "platform-tools" "emulator" "system-images;android-34;default;x86_64" "build-tools;34.0.0" "platforms;android-34"` | **`default`, never `aosp_atd`** — see §6 |
 | AVD | `avdmanager create avd -n testavd -k "system-images;android-34;default;x86_64" -d pixel_5 --force`, then copy `avd/testavd.config.ini` over `config.ini` | the tuned file is what makes the screen 320×640, the GPU software, the data partition 2048 M and the snapshots off |
+| **AVD home link** | `ln -s /workspaces/android-avd ~/.android/avd` | the AVD lives outside `$HOME`; without this link the emulator says *"Unknown AVD name [testavd]"* and never boots — see §6.22 |
 | Flutter | `git clone --depth 1 --branch 3.35.1 https://github.com/flutter/flutter.git /workspaces/flutter` | the `.git` directory is required — Flutter refuses to run without it |
 
 **Check it worked:**
@@ -133,7 +144,8 @@ bash scripts/install-stack.sh
 It creates:
 
 * `/workspaces/<script>` → `scripts/<script>` for every runtime script
-* `/workspaces/mini_app` → `app/` (the path the supervisor installs the APK from)
+* `/workspaces/mini_app` → `app/` (the path the supervisor installs the APK
+  from — only when the repository contains an `app/` directory)
 * `~/.vscode-remote/extensions/codespace.emulator-view-0.1.0/` from
   `extension.js`, `package.json` and `media/`
 
@@ -141,7 +153,50 @@ It creates:
 > the files does. After copying, the user must run **Developer: Reload Window**
 > once — the extension host does not respawn on its own.
 
-### Step 3 — start the emulator
+### Step 3 — build and run your app
+
+The repository has **no app in it**. Pick one of these:
+
+**(a) A Flutter project of your own.** Put it in `app/`, or anywhere:
+
+```bash
+cd /workspaces && flutter create my_app        # or copy your project in
+bash /workspaces/install-stack.sh              # links /workspaces/mini_app -> app/
+```
+
+**(b) A project that is already on the machine.** Point the scripts at it:
+
+```bash
+export APP_DIR=/workspaces/my_app
+export APP_PKG=com.example.my_app
+```
+
+Then build — **detached**, it takes ~12 min the first time (~5 min with warm
+caches), and a foreground build gets killed with the shell:
+
+```bash
+setsid nohup bash /workspaces/build.sh "$APP_DIR" \
+  android-arm,android-arm64,android-x64 >/tmp/flutter-build.log 2>&1 </dev/null & disown
+sleep 60; tail -5 /tmp/flutter-build.log
+```
+
+`build.sh` writes
+`$APP_DIR/build/app/outputs/flutter-apk/app-release.apk`, which is exactly
+where the stack looks for it. All three ABIs are needed for a real phone;
+`android-x64` alone is enough for the emulator.
+
+* **Build before the emulator is started.** A 3-ABI Gradle build with the
+  emulator running gets the daemon OOM-killed on this 2-vCPU / 7.8 GB / no-swap
+  box. If the emulator is already up: `bash /workspaces/emu.sh stop` → build →
+  `bash /workspaces/emu.sh`.
+* **All three ABIs** are built (`android-arm,android-arm64,android-x64`).
+  An x86_64-only APK is refused by a real phone.
+* The NDK (2.0 GB) and CMake (61 MB) are downloaded automatically by AGP on
+  the first build. Nothing to install by hand. The first build also pulls the
+  Dart SDK (207 MB), build-tools 35 and platform 36 — that is what makes it
+  take ~12 min instead of ~5 min.
+
+### Step 4 — start the emulator
 
 ```bash
 bash /workspaces/emu.sh
@@ -166,6 +221,13 @@ bash /workspaces/emu.sh
 * Cold start **~1 min 50 s** (the emulator boot dominates). Already running:
   **~20 s**.
 * Subcommands: `start` (default), `status`, `stop`, `restart`, `url`, `logs`.
+* `emu.sh` installs the APK from
+  `/workspaces/mini_app/build/app/outputs/flutter-apk/app-release.apk` and
+  launches it by itself — there is no separate install step.
+* **`viewer already listening on :8091` is normal.** The VS Code extension
+  starts its own viewer (it has to live in the extension host's process tree
+  for the Codespaces port agent to forward it), and `emu.sh` then leaves that
+  one alone instead of starting a duplicate.
 * In VS Code: **Ctrl+Shift+B** runs it (task *Android Emulator: Start
   Everything*). The task *Android Emulator: Ensure Up (auto)* runs on every
   folder open, so in normal use **the user does nothing** — the stack comes up
@@ -174,15 +236,9 @@ bash /workspaces/emu.sh
 The public URL is `https://<codespace-name>-8091.app.github.dev/`. Get the
 name with `echo $CODESPACE_NAME`, or `bash /workspaces/emu.sh url`.
 
-### Step 4 — build and install the app
+Installing by hand (not needed — `emu.sh` does it):
 
 ```bash
-# 1. build - DETACHED, it takes ~5 minutes
-cd /workspaces/empty-repo/app
-setsid nohup bash /workspaces/build-callnote.sh >/tmp/flutter-build.log 2>&1 </dev/null & disown
-sleep 60; tail -5 /tmp/flutter-build.log
-
-# 2. install and launch
 A=/workspaces/android-sdk/platform-tools/adb
 $A install -r app/build/app/outputs/flutter-apk/app-release.apk
 $A shell am force-stop com.example.mini_app
@@ -191,12 +247,9 @@ $A shell am start -n com.example.mini_app/.MainActivity --ez enable-impeller fal
 
 * **`--ez enable-impeller false` is mandatory.** Impeller's Vulkan renderer on
   a software GPU pins qemu at 100 % of a core and the phone freezes.
-* **All three ABIs** are built (`android-arm,android-arm64,android-x64`).
-  An x86_64-only APK is refused by a real phone.
-* **Stop the emulator before a build** — `bash /workspaces/emu.sh stop` — or the
-  Gradle daemon gets OOM-killed on this 2-vCPU / 7.8 GB / no-swap box.
-* The NDK (2.0 GB) and CMake (61 MB) are downloaded automatically by AGP on
-  the first build. Nothing to install by hand.
+* On the very first launch the app asks for its runtime permissions. Tap
+  **Allow** — or grant them with
+  `adb shell pm grant <package-id> <permission>`.
 
 ### Step 5 — verify the whole thing
 
@@ -217,33 +270,25 @@ Eight checkpoints, all of which must pass:
 | 7 | forwarded port | `8091 public https://<cs>-8091.app.github.dev` |
 | 8 | public URL | `http=200` |
 
-Then the functional test suite:
+Then the full-stack proof — it destroys everything and shows that the one
+command brings it all back:
 
 ```bash
-bash /workspaces/callnote-fgs-test.sh all     # 13 checks, ~4 min (it reboots the device)
-```
-
-```
-== 1. service + notification are up
-== 2. app is swiped out of recents
-== 3. a reminder still arrives with the app swiped away
-== 4. outgoing call is caught
-== 5. after a reboot the watcher comes back by itself
-== result: 13 passed, 0 failed
+bash /workspaces/coldstart-test.sh      # ~2 min
 ```
 
 ### Step 6 — make a release for a phone
 
 ```bash
-bash scripts/package-release.sh --build
+bash scripts/package-release.sh --build "$APP_DIR" "$APP_PKG" my_app
 ```
 
-Produces `callnote-release-<YYYYMMDD-HHMMSS>.apk` and `.zip` in the repository
+Produces `my_app-release-<YYYYMMDD-HHMMSS>.apk` and `.zip` in the repository
 root, each with its own name so no build overwrites another. The zip holds the
 APK plus a `README.txt` with its hashes, size, ABIs and signer.
 
 ```bash
-adb install -r callnote-release-<stamp>.apk
+adb install -r my_app-release-<stamp>.apk
 ```
 
 ---
@@ -285,6 +330,10 @@ Use this as the baseline when deciding whether something is broken.
 | frame capture over gRPC | 18–84 ms, avg 42 ms |
 | cold boot of the emulator | 60–140 s |
 | container wipe → working public page | ~90 s |
+| `install-toolchain.sh` on an empty volume | ~4 min |
+| first release build (cold caches) | ~12 min (693 s measured) |
+| release build (warm caches) | ~5 min |
+| `coldstart-test.sh` | ~2 min (it destroys the stack and rebuilds it) |
 
 * The guest OS is idle ~90 % of the time while the **host** is saturated: the
   emulator rasterises every pixel on the CPU (SwiftShader) and the Codespace
@@ -482,7 +531,7 @@ It can take two or three attempts and ~40 s. Then the broadcast goes out and
 the log shows:
 
 ```
-I CallNote: boot: starting monitor service (android.intent.action.BOOT_COMPLETED)
+I YourApp: boot: starting monitor service (android.intent.action.BOOT_COMPLETED)
 I ActivityManager: Background started FGS: Allowed [... code:BOOT_COMPLETED ...]
 ```
 
@@ -492,12 +541,70 @@ If the reboot command is issued while `adbd` is restarting, it is silently
 dropped and the guest never restarts. The test script reads `/proc/uptime`
 before and after and retries if the guest did not actually restart.
 
-### 6.21 The test suite builds its own fixtures
+### 6.21 A test suite must build its own fixtures
 
-`callnote-fgs-test.sh` does not rely on anything that was set up by hand: it
-writes the note (`files/callnote.json`), the watcher switch
-(`shared_prefs/callnote.xml`) and the radio operator itself, using `adb root`.
-A fresh install therefore still tests something real.
+A test that relies on state someone set up by hand passes on the developer's
+machine and fails on a fresh one. Write the fixtures into the app's own
+storage (`adb root` → `files/` and `shared_prefs/`) and assert on something
+the *app* produced, not on something the system also produces — the dialer's
+own notification carries the contact name too, so an assertion on the name
+passes for the wrong reason.
+
+### 6.22 The AVD lives outside `$HOME` — "Unknown AVD name [testavd]"
+
+**The single most expensive trap in the repo.** The AVD is in
+`/workspaces/android-avd` (the persistent volume), but the emulator looks for
+AVDs in `$ANDROID_AVD_HOME`, `$ANDROID_SDK_HOME/avd` and `$HOME/.android/avd`
+— in that order. Without one of those three pointing at the AVD, the emulator
+prints:
+
+```
+ERROR | Unknown AVD name [testavd], use -list-avds to see valid list.
+ERROR | HOME is defined but there is no file testavd.ini in $HOME/.android/avd
+```
+
+and exits. `emu.sh` then waits the full 5 minutes for a device that never
+appears, and the supervisor retries the same thing every 8 s forever. **No
+error on the screen, no qemu process, no device** — it looks like a hung
+emulator.
+
+Both halves of the fix are needed:
+
+1. **The scripts export `ANDROID_AVD_HOME=/workspaces/android-avd`** —
+   `emu.sh`, `supervisor.sh`, `start-avd.sh` and `run-all.sh`. Without it the
+   scripts depend on the caller's shell having sourced
+   `/workspaces/androidsdk-env.sh`, which the documented one-liner
+   (`bash /workspaces/emu.sh`) does **not** do. That is why the bug survived
+   sixteen sessions: every earlier session ran the scripts from a shell that
+   happened to have the variable set.
+2. **`~/.android/avd` is a symlink to `/workspaces/android-avd`** — created by
+   `install-toolchain.sh`, re-created by `bootstrap.sh` (it lives in `$HOME`,
+   which does not survive a container rebuild) and by `ensure-up.sh`.
+
+Why the symlink as well as the variable: the emulator writes its discovery
+files (`running/pid_*.ini`, with the rotating gRPC token) into the **AVD
+home**, and `extension.js` and `grpc-grab.js` read them from
+`~/.android/avd/running`. With the variable alone the token file moves to
+`/workspaces/android-avd/running` and both readers miss it — the extension
+falls back to `adb screencap` (~800 ms instead of ~25 ms). With the symlink
+both paths are the same directory (`stat -c %i` gives the same inode).
+
+**Check it in one command:**
+
+```bash
+emulator -list-avds        # must print: testavd
+```
+
+If it prints nothing, the link is missing — `bash scripts/bootstrap.sh` fixes
+it.
+
+### 6.23 The first build takes ~12 min, not ~5
+
+The extra time is one-off downloads that AGP and Flutter do by themselves:
+the Dart SDK (207 MB), the NDK (2.0 GB), CMake (61 MB), build-tools 35 and
+platform 36. Measured on 2026-11-04: `assembleRelease` took **693 s**. The
+build itself is never the problem — it is the downloads. Never cancel it, and
+never run it in the foreground (§6.16).
 
 ---
 
@@ -512,10 +619,9 @@ rebuild, so the app can never be updated in place on a phone.
 bash scripts/create-keystore.sh
 ```
 
-It creates `/workspaces/.keystore/callnote-release.jks` (RSA 4096, alias
-`callnote`, 30 years) and writes `app/android/key.properties` and
-`key.properties` pointing at it. Both are **gitignored** — never commit the
-keystore or the passwords.
+It creates `/workspaces/.keystore/<name>-release.jks` (RSA 4096, 30 years) and
+writes `app/android/key.properties` and `key.properties` pointing at it. Both
+are **gitignored** — never commit the keystore or the passwords.
 
 `app/android/app/build.gradle.kts` uses the release key **only if
 `key.properties` exists**; without it the build falls back to the debug key,
@@ -530,15 +636,25 @@ so the repository stays buildable anywhere.
 
 | What | Where | How |
 |---|---|---|
-| The app | `app/` | edit, then `scripts/build-callnote.sh` (detached) |
+| An app | `app/` | edit, then `scripts/build.sh app` (detached) |
 | The extension | `extension.js`, `media/view.js`, `media/view.css` | `bash scripts/install-stack.sh`, then the user reloads the window |
 | The stack scripts | `scripts/` | edit here; `/workspaces/*` are symlinks into this repo |
 | The AVD | `avd/testavd.config.ini` | applies at the next emulator start |
 | The public URL / port | `scripts/emu.sh` (`PORT=8091`) | the extension reads the same port |
 
-The **package id stays `com.example.mini_app`** — `supervisor.sh`, `emu.sh` and
-`run-all.sh` hardcode it. The launcher name is `android:label` in the
-manifest and nothing else.
+**The app under test is configurable, not hardcoded.** `emu.sh`,
+`supervisor.sh`, `run-all.sh` and `verify.sh` all read:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `APP_DIR` | where the project lives | `/workspaces/mini_app` |
+| `APP_PKG` | the package id to install and launch | *(empty — no app)* |
+| `APP_APK` | the APK to install | `$APP_DIR/build/app/outputs/flutter-apk/app-release.apk` |
+| `APP_ACTIVITY` | the launcher activity | `.MainActivity` |
+
+With `APP_PKG` empty the stack runs the emulator and the viewer and shows the
+launcher. With it set, the stack installs the APK, launches the app and keeps
+it in the foreground.
 
 ---
 
@@ -547,7 +663,7 @@ manifest and nothing else.
 | Path | What |
 |---|---|
 | `/workspaces/empty-repo/` | this repository |
-| `/workspaces/empty-repo/app/` | the CallNote Flutter app |
+| `/workspaces/empty-repo/app/` | your app, if you put one there |
 | `/workspaces/empty-repo/scripts/` | every runtime script (source of truth) |
 | `/workspaces/empty-repo/avd/testavd.config.ini` | the tuned AVD config |
 | `/workspaces/empty-repo/extension.js` | the VS Code extension |
@@ -587,10 +703,9 @@ manifest and nothing else.
 | `scripts/verify.sh` | the eight health checkpoints |
 | `scripts/coldstart-test.sh` | destroys everything and proves the one command brings it back |
 | `scripts/build.sh` | builds a release APK for any Flutter project |
-| `scripts/build-callnote.sh` | the CallNote release build (all three ABIs) |
+| `scripts/build.sh` | builds any Flutter project (detached) |
 | `scripts/package-release.sh` | the timestamped release packaging |
-| `scripts/callnote-fgs-test.sh` | the 13-check test suite |
-| `scripts/seed-contacts.sh` | seeds Batman 5550100, Joker 5550200, Alfred 5550300 |
+| `scripts/coldstart-test.sh` | destroys the stack and proves the one command brings it back |
 
 ---
 

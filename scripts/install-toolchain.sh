@@ -123,19 +123,22 @@ if [ -f "$REPO/avd/testavd.config.ini" ]; then
   ok "config.ini applied from avd/testavd.config.ini"
 fi
 
-# The emulator needs this wrapper, because the AVD home lives outside $HOME.
-mkdir -p "$SDK/emulator"
-if [ ! -f "$SDK/emulator/emulator" ]; then
-  cat >"$SDK/emulator/emulator" <<'WRAP'
-#!/usr/bin/env bash
-# Wrapper: the real emulator binary lives next to this file as
-# .emulator-real, but the AVD home must be set explicitly.
-D=$(readlink -f "$(dirname "$0")")
-export ANDROID_AVD_HOME=/workspaces/android-avd
-exec "$D/.emulator-real" "$@"
-WRAP
-  chmod +x "$SDK/emulator/emulator"
-  ok "emulator wrapper created"
+# The AVD lives in /workspaces/android-avd, outside $HOME. The emulator looks
+# for AVDs in $ANDROID_AVD_HOME, $ANDROID_SDK_HOME/avd and $HOME/.android/avd -
+# in that order - so a symlink at the last place makes the AVD discoverable from
+# every shell, with no environment variable needed.
+#
+# It has to be a symlink and not a copy: the emulator writes its discovery
+# files (running/pid_*.ini, with the rotating gRPC token) into the AVD home,
+# and extension.js / grpc-grab.js read them from ~/.android/avd/running.
+mkdir -p "$HOME/.android"
+if [ -L "$HOME/.android/avd" ]; then
+  ok "$HOME/.android/avd already links to $(readlink "$HOME/.android/avd")"
+elif [ -e "$HOME/.android/avd" ]; then
+  warn "$HOME/.android/avd exists and is not a symlink - the emulator may not find $AVD_NAME"
+else
+  ln -s "$AVD_HOME" "$HOME/.android/avd"
+  ok "$HOME/.android/avd -> $AVD_HOME"
 fi
 
 # ---------------------------------------------------------------- 5. Flutter

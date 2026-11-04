@@ -39,7 +39,7 @@ done
 echo "### 4. result"
 [ "$ok" = "1" ] || { echo "  FAILED: the stack did not come up"; exit 1; }
 echo "  supervisor:      $(cat /tmp/supervisor.pid 2>/dev/null) (pid)"
-echo "  app foreground:  $(timeout 10 $A shell dumpsys window 2>/dev/null | grep -m1 -o 'com.example.mini_app[^ ]*' || echo 'none installed')"
+echo "  app foreground:  $(timeout 10 $A shell dumpsys window 2>/dev/null | grep -m1 -o "${APP_PKG:-no.app.configured}[^ ]*" || echo 'none installed')"
 echo "  frame:           $(timeout 15 $A exec-out screencap -p 2>/dev/null | wc -c) bytes (0 = black screen)"
 timeout 30 gh codespace ports -c "$CS" 2>/dev/null | grep 8091 | sed 's/^/  port:           /'
 echo "  public URL:      HTTP $(timeout 20 curl -s -o /dev/null -w '%{http_code}' -m 15 "https://$CS-8091.app.github.dev/status")"

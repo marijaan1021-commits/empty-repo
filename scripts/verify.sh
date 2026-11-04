@@ -6,14 +6,18 @@
 CS=${CODESPACE_NAME:-$(gh codespace list --json name -q '.[0].name' 2>/dev/null)}
 CS=${CS:-zany-space-carnival-p79jxxwgj4wvfr95j}
 ADB=/workspaces/android-sdk/platform-tools/adb
+# The app under test, if there is one.
+PKG=${APP_PKG:-}
 
 echo "== emulator =="
 timeout 15 $ADB devices
 echo "boot_completed: $(timeout 10 $ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
-if timeout 10 $ADB shell pm list packages 2>/dev/null | grep -q 'package:com.example.mini_app'; then
-  echo "app pid: $(timeout 10 $ADB shell pidof com.example.mini_app 2>/dev/null | tr -d '\r')"
+if [ -n "$PKG" ] && timeout 10 $ADB shell pm list packages 2>/dev/null | grep -q "package:$PKG"; then
+  echo "app pid: $(timeout 10 $ADB shell pidof "$PKG" 2>/dev/null | tr -d '\r')"
+elif [ -n "$PKG" ]; then
+  echo "app $PKG: not installed"
 else
-  echo "app: not installed (expected - the test app was removed)"
+  echo "app: none configured (set APP_PKG to check one)"
 fi
 
 echo
