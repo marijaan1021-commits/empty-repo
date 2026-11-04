@@ -14,7 +14,9 @@
 # It is idempotent and safe to re-run after every container rebuild.
 set -u
 
-WS=/workspaces
+# The runtime root. Overridable only so the script can be tested without
+# touching the live /workspaces.
+WS=${WS:-/workspaces}
 SELF=$(readlink -f "$0")
 REPO=$(dirname "$(dirname "$SELF")")
 EXT_ID=codespace.emulator-view

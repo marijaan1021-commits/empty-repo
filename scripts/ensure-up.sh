@@ -82,8 +82,17 @@ if pgrep -f "$SUP_RE" >/dev/null 2>&1; then
 fi
 
 if [ ! -f "$SUP" ]; then
-  echo "WARN: $SUP not found"
-  exit 0
+    # The supervisor script can be missing if a test renamed it away and the
+    # container was reset before it could be put back. Recreate the link from
+    # this repository - this file lives in the same directory.
+    repo_sup="$(dirname "$(readlink -f "$0")")/supervisor.sh"
+    if [ -f "$repo_sup" ]; then
+        ln -sf "$repo_sup" "$SUP"
+        echo "restored $SUP"
+    else
+        echo "WARN: $SUP not found"
+        exit 0
+    fi
 fi
 
 setsid nohup bash "$SUP" >/tmp/supervisor.out 2>&1 </dev/null &

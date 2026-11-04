@@ -460,6 +460,45 @@ and the emulator runs with `-no-snapshot-save -no-snapshot-load`), so every
 boot is a cold boot. `sys.boot_completed=1` is the only reliable readiness
 signal.
 
+### 6.19 `BOOT_COMPLETED` is only delivered **after the first unlock**
+
+Since Android 8 the system holds the boot broadcast back until the device has
+been unlocked once after the boot. The emulator comes up on the keyguard, so
+until something dismisses it, `NoteBootReceiver` never fires and the watcher
+never comes back on its own.
+
+That is why the supervisor dismisses the keyguard on every tick — it is not
+cosmetic, it is what makes the "survives a reboot" feature work.
+
+To reproduce it by hand:
+
+```bash
+adb shell input keyevent 224          # WAKEUP
+adb shell wm dismiss-keyguard
+adb shell input swipe 160 500 160 60 200
+```
+
+It can take two or three attempts and ~40 s. Then the broadcast goes out and
+the log shows:
+
+```
+I CallNote: boot: starting monitor service (android.intent.action.BOOT_COMPLETED)
+I ActivityManager: Background started FGS: Allowed [... code:BOOT_COMPLETED ...]
+```
+
+### 6.20 `adb reboot` can be lost — check the uptime
+
+If the reboot command is issued while `adbd` is restarting, it is silently
+dropped and the guest never restarts. The test script reads `/proc/uptime`
+before and after and retries if the guest did not actually restart.
+
+### 6.21 The test suite builds its own fixtures
+
+`callnote-fgs-test.sh` does not rely on anything that was set up by hand: it
+writes the note (`files/callnote.json`), the watcher switch
+(`shared_prefs/callnote.xml`) and the radio operator itself, using `adb root`.
+A fresh install therefore still tests something real.
+
 ---
 
 ## 7. Signing (the keystore)

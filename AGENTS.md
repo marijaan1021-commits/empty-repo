@@ -2900,3 +2900,88 @@ the app still works, but only from the call log — and then the reminder comes
 late, which is the thing §32 is about.
 
 `callnote-fgs-test.sh` grants it (step 1) along with the other three.
+
+---
+
+## 33. Seventeenth session (2026-11-04) — the repo becomes self-contained
+
+The task: make the repository able to rebuild the whole stack from scratch, so
+a fresh session (or a fresh Codespace) needs nothing but the repo.
+
+### 33.1 What was added to the repository
+
+| Path | What it is |
+|---|---|
+| `scripts/` | all 18 runtime scripts, copied verbatim from `/workspaces` (source of truth from now on) |
+| `scripts/install-toolchain.sh` | SDK + emulator + system image + AVD + JDK 17 + Flutter, from nothing |
+| `scripts/install-stack.sh` | links `scripts/<name>` → `/workspaces/<name>`, installs the VS Code extension |
+| `scripts/create-keystore.sh` | generates the release keystore (gitignored output) |
+| `avd/testavd.config.ini` | the tuned AVD config (320×640, 2048M data, snapshots off) |
+| `START-HERE.md` | the from-scratch guide (12 sections, 21 traps) |
+| `README.md` | rewritten to point at `START-HERE.md` |
+| `CALLNOTE.md` | the app documentation |
+
+`/workspaces/*.sh` are **symlinks** into `scripts/`, so editing a script in the
+repo changes the running system immediately. `install-stack.sh` recreates the
+whole link farm (and is the repair command after a container rebuild).
+
+### 33.2 The build was verified from a clean clone
+
+A clone at `/workspaces/clone-test` was built from scratch:
+
+```
+46,116,469 bytes, native-code: 'arm64-v8a' 'armeabi-v7a' 'x86_64'
+application-label:'CallNote'
+Signer #1 certificate DN: CN=CallNote, OU=CallNote, O=CallNote, L=, ST=, C=US
+```
+
+It installed and ran (screenshot in `/workspaces/.keep/clone-frame.png`).
+**Never build in `/tmp`** — the container reset wipes it.
+
+### 33.3 The test suite was rewritten to build its own fixtures
+
+The old `callnote-fgs-test.sh` assumed a note, a switched-on watcher and a
+registered SIM were already there. On a fresh install it failed 4 of 13
+checks for that reason alone. It now:
+
+* writes `files/callnote.json` and `shared_prefs/callnote.xml` (with
+  `adb root`), then fixes the ownership
+* registers the radio (`adb emu gsm operator 310260`)
+* asserts on the notification **body** (`"test reminder"`), not on the contact
+  name — the dialer's own notification contains the contact name too, so the
+  old assertion passed for the wrong reason
+* polls for the service instead of checking once
+* ends the call it made, so the next check does not see a "call in progress"
+
+### 33.4 `BOOT_COMPLETED` is only delivered after the first unlock
+
+Since Android 8 the system holds the boot broadcast back until the device has
+been unlocked once after the boot. The emulator comes up on the keyguard, so
+**the supervisor's keyguard dismissal is what makes the "survives a reboot"
+feature work** — not a cosmetic detail.
+
+Proven from the logcat after a real reboot:
+
+```
+11-04 10:37:19.310 I CallNote: boot: starting monitor service (android.intent.action.BOOT_COMPLETED)
+11-04 10:37:19.318 I ActivityManager: Background started FGS: Allowed [... code:BOOT_COMPLETED ...]
+```
+
+The broadcast arrived ~2 minutes after the boot — i.e. when the keyguard was
+finally dismissed (it takes 2–3 attempts and ~40 s). The test now unlocks in a
+loop and waits up to 2 minutes for the receiver.
+
+### 33.5 Two more traps
+
+* **`adb reboot` can be silently lost** if it is issued while `adbd` is
+  restarting. The test reads `/proc/uptime` before and after and retries.
+* **The test renames `/workspaces/supervisor.sh` out of the way** so nothing
+  restarts the supervisor during the reboot. A container reset in the middle
+  of the test left the script renamed away — and the stack never came back.
+  `ensure-up.sh` now recreates the link from the repository if it is missing,
+  and the test restores it from an `EXIT` trap.
+
+### 33.6 The container resets every ~30 minutes
+
+It has now interrupted the test twice. It is the environment, not the code
+(§15.1). Anything that must survive a reset has to live on `/workspaces`.
