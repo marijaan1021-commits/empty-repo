@@ -1,0 +1,22 @@
+# build outputs
+*.apk
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+
+# signing secrets - never commit these
+*.jks
+*.keystore
+key.properties
+app/android/key.properties
+callnote-release.jks
+key.properties
+*.zip
+
+# not part of this project - leftovers from other work in the same workspace
+audit-output.txt
+fastdl-*.py
+
+# local runtime state
+/avd/*.local.ini

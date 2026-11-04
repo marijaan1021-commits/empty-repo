@@ -1,0 +1,15 @@
+{
+  "remote.forwardPorts": [8091, 9123],
+  "forwardPorts": [8091, 9123],
+  "portsAttributes": {
+    "8091": {
+      "label": "Android Emulator (live screen)",
+      "onAutoForward": "openBrowser"
+    },
+    "9123": {
+      "label": "Android Emulator (alt)",
+      "onAutoForward": "silent"
+    }
+  },
+  "terminal.integrated.defaultProfile.linux": "bash"
+}

@@ -6,11 +6,21 @@
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <!-- See outgoing calls (the row is written while the call is running). -->
     <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <!-- The phone state (ringing / off-hook) is what tells us that a call is
+         happening right now. The call log only says so afterwards on some
+         phones, which made the reminder arrive after the call was over. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <!-- Start watching for calls again after the phone reboots. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- The watching service that survives the app being swiped away. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
 
     <application
         android:label="CallNote"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -30,7 +40,7 @@
             </intent-filter>
         </activity>
 
-        <!-- "Done" and "Snooze" on the reminder notification. -->
+        <!-- "Stop permanently", "Snooze" and "Stop watching". -->
         <receiver
             android:name=".NoteActionReceiver"
             android:exported="false"/>
@@ -44,6 +54,31 @@
                 <action android:name="android.telecom.CallScreeningService"/>
             </intent-filter>
         </service>
+
+        <!--
+          Keeps the call watcher alive when the app is swiped out of recents,
+          and is started again after a reboot.
+        -->
+        <service
+            android:name=".CallNoteMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watches the device call log so a saved note can be shown when that contact calls."/>
+        </service>
+
+        <!-- Bring the watcher back after a reboot or an app update. -->
+        <receiver
+            android:name=".NoteBootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
 
         <meta-data
             android:name="flutterEmbedding"

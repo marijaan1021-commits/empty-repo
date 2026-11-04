@@ -16,9 +16,9 @@
       "problemMatcher": []
     },
     {
-      "label": "Start Android Emulator + Viewer",
+      "label": "Android Emulator: Start Everything",
       "type": "shell",
-      "command": "bash /workspaces/run-all.sh",
+      "command": "bash /workspaces/emu.sh start",
       "problemMatcher": [],
       "presentation": {
         "reveal": "always",
@@ -28,6 +28,37 @@
       "group": {
         "kind": "build",
         "isDefault": true
+      }
+    },
+    {
+      "label": "Android Emulator: Status",
+      "type": "shell",
+      "command": "bash /workspaces/emu.sh status",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Android Emulator: Stop Everything",
+      "type": "shell",
+      "command": "bash /workspaces/emu.sh stop",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Start Android Emulator + Viewer",
+      "type": "shell",
+      "command": "bash /workspaces/run-all.sh",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
       }
     }
   ]

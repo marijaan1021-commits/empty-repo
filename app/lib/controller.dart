@@ -12,6 +12,7 @@ class CallEvent {
     required this.number,
     required this.incoming,
     required this.sessionId,
+    this.posted = false,
   });
 
   final String number;
@@ -21,6 +22,13 @@ class CallEvent {
   /// so a call is never reminded about twice - but the *next* call is a new
   /// session and reminds again.
   final String sessionId;
+
+  /// True when the native side has already posted the reminder itself.
+  ///
+  /// The native side has to do that, because it also works when this Dart
+  /// code is not running at all - the app was swiped away, or the phone has
+  /// just rebooted.
+  final bool posted;
 }
 
 /// Holds the notes, listens for calls and for notification button presses.
@@ -37,6 +45,9 @@ class Controller extends ChangeNotifier {
 
   bool ready = false;
   bool callerIdRoleHeld = false;
+
+  /// True while the native watcher service is running.
+  bool monitoring = false;
   String status = '';
 
   Future<void> init() async {
@@ -54,7 +65,28 @@ class Controller extends ChangeNotifier {
   Future<void> refreshStatus() async {
     final role = await Bridge.invoke<bool>('hasCallerIdRole');
     callerIdRoleHeld = role ?? false;
+    final mon = await Bridge.invoke<bool>('isMonitoring');
+    monitoring = mon ?? false;
     notifyListeners();
+  }
+
+  /// Turns the native watcher on or off.
+  ///
+  /// While it is on, a reminder is posted even when the app has been closed
+  /// or swiped away, and it comes back by itself after a reboot.
+  Future<void> setMonitoring(bool on) async {
+    monitoring = on;
+    notifyListeners();
+    await Bridge.invoke<bool>('setMonitoring', <String, dynamic>{'on': on});
+  }
+
+  /// Starts the watcher if it is supposed to be on.
+  ///
+  /// The watcher shows an ongoing notification, and a notification posted
+  /// before the user granted POST_NOTIFICATIONS is dropped by the system for
+  /// good. So this is called again once the permission prompt is answered.
+  Future<void> ensureMonitorRunning() async {
+    await Bridge.invoke<bool>('ensureMonitorRunning');
   }
 
   // ---------------------------------------------------------------- actions
@@ -136,12 +168,18 @@ class Controller extends ChangeNotifier {
         number: (args['number'] ?? '').toString(),
         incoming: args['incoming'] == true,
         sessionId: (args['sessionId'] ?? '').toString(),
+        posted: args['posted'] == true,
       ));
     } else if (method == 'onNotificationAction') {
       onNotificationAction(
         (args['action'] ?? '').toString(),
         (args['id'] ?? '').toString(),
       );
+    } else if (method == 'onMonitoring') {
+      // Watching can be turned off from the notification, without the app
+      // being open - keep the UI in sync with that.
+      monitoring = args['on'] == true;
+      notifyListeners();
     }
   }
 
@@ -151,6 +189,10 @@ class Controller extends ChangeNotifier {
       if (_handledSessions.contains(event.sessionId)) return;
       _handledSessions.add(event.sessionId);
     }
+    // The native side normally posts the reminder itself - it has to, since
+    // it also works while no Dart code is running. Only step in when it could
+    // not (it tells us so with posted=false).
+    if (event.posted) return;
     final CallNote? note = await findNoteFor(event.number);
     if (note == null) return;
     if (!note.willRemind) return; // disabled, or the note has no text
@@ -206,11 +248,20 @@ class Controller extends ChangeNotifier {
       if (action == 'done') {
         note.enabled = false;
         note.updatedAt = DateTime.now().millisecondsSinceEpoch;
-        await store.save();
       }
       await Bridge.invoke<bool>('cancelNotification', <String, dynamic>{'id': id});
+      // The native side writes the change into the note file as well - it has
+      // to, the button can be pressed while the app is closed. Read the file
+      // back instead of writing our own copy over it.
+      await _resync();
       notifyListeners();
     }
+  }
+
+  /// Reloads the notes from the file, so both sides agree on what is saved.
+  Future<void> _resync() async {
+    await store.load();
+    notes = store.notes;
   }
 
   Future<void> _drainPendingActions() async {
@@ -237,16 +288,6 @@ class Controller extends ChangeNotifier {
     });
   }
 
-  Future<void> simulateCall({bool incoming = true}) async {
-    final CallNote? note = notes.isEmpty ? null : notes.first;
-    final String number = note != null && note.numbers.isNotEmpty
-        ? note.numbers.first
-        : '5550100';
-    await Bridge.invoke<bool>('simulateCall', <String, dynamic>{
-      'number': number,
-      'incoming': incoming,
-    });
-  }
 }
 
 /// Creates the store file inside the app's private data directory.

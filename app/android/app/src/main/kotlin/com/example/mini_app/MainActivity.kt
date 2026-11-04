@@ -9,9 +9,21 @@ class MainActivity : FlutterActivity() {
 
     private var engine: CallNoteEngine? = null
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // The first launch turns monitoring on. After that the user's choice
+        // is kept, so "Stop watching" is not undone by opening the app.
+        val prefs = getSharedPreferences(CallNoteEngine.PREFS, MODE_PRIVATE)
+        if (!prefs.contains(CallNoteEngine.KEY_MONITORING)) {
+            CallNoteEngine.setMonitoring(this, true)
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        engine = CallNoteEngine(this, flutterEngine.dartExecutor.binaryMessenger)
+        engine = CallNoteEngine.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        // Keeps the reminder working after the app is swiped away.
+        CallNoteMonitorService.start(this)
     }
 
     override fun onRequestPermissionsResult(

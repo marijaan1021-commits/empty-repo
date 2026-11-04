@@ -7,6 +7,9 @@ import android.telecom.CallScreeningService
  * Sees incoming calls the moment the phone rings, and tells the app the
  * number. This is the official "Caller ID" service, so the app has to hold
  * the android.app.role.CALL_SCREENING role.
+ *
+ * The reminder is posted from here (through the engine), not from Dart, so it
+ * works even when the app itself has been swiped away.
  */
 class NoteCallScreeningService : CallScreeningService() {
 
@@ -20,8 +23,7 @@ class NoteCallScreeningService : CallScreeningService() {
                 .orEmpty()
             if (digits.isNotEmpty()) {
                 val now = System.currentTimeMillis()
-                CallNoteEngine.recordScreened(digits, now)
-                CallNoteEngine.emitCall(digits, true, "in:$digits:$now")
+                CallNoteEngine.get(this).onScreenedCall(digits, now)
             }
         } catch (e: Exception) {
             // never crash the call screener

@@ -29,10 +29,15 @@ class _HomeScreenState extends State<HomeScreen> {
       'android.permission.POST_NOTIFICATIONS',
       'android.permission.READ_CONTACTS',
       'android.permission.READ_CALL_LOG',
+      'android.permission.READ_PHONE_STATE',
     ]) {
       final bool? granted = await Bridge.invoke<bool>('requestPermission', <String, dynamic>{'permission': p});
       if (granted != true) break; // one denial at a time, the user can retry
     }
+    // The watcher's ongoing notification is dropped by Android if it was
+    // posted before POST_NOTIFICATIONS was granted, so ask the native side to
+    // start the watcher again now that the answer is known.
+    await c.ensureMonitorRunning();
     await c.refreshStatus();
   }
 
@@ -89,7 +94,14 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
           body: SafeArea(
-            child: c.notes.isEmpty ? _emptyState() : _list(),
+            child: Column(
+              children: <Widget>[
+                if (!c.monitoring) _notWatching(),
+                Expanded(
+                  child: c.notes.isEmpty ? _emptyState() : _list(),
+                ),
+              ],
+            ),
           ),
           floatingActionButton: FloatingActionButton(
             onPressed: _addContact,
@@ -118,6 +130,30 @@ class _HomeScreenState extends State<HomeScreen> {
           onDelete: () => _confirmDelete(note),
         );
       },
+    );
+  }
+
+  Widget _notWatching() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2A1F00),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Row(
+        children: <Widget>[
+          Icon(Icons.visibility_off, size: 18, color: Color(0xFFFFC107)),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'CallNote is not watching for calls. Notes will not appear.',
+              style: TextStyle(fontSize: 13, color: Color(0xFFFFE082), height: 1.3),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -157,6 +193,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _menu(BuildContext context) async {
+    // Watching can be turned off from the notification, so read the real
+    // state before showing the menu.
+    await c.refreshStatus();
+    if (!context.mounted) return;
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF141414),
@@ -181,14 +221,16 @@ class _HomeScreenState extends State<HomeScreen> {
               c.postTestNotification();
               Navigator.pop(ctx);
             }),
-            _menuItem(ctx, Icons.call_received, 'Simulate an incoming call', () {
-              c.simulateCall();
-              Navigator.pop(ctx);
-            }),
-            _menuItem(ctx, Icons.call_made, 'Simulate an outgoing call', () {
-              c.simulateCall(incoming: false);
-              Navigator.pop(ctx);
-            }),
+            _menuItem(
+              ctx,
+              c.monitoring ? Icons.visibility_off : Icons.visibility,
+              c.monitoring ? 'Stop watching calls' : 'Start watching calls',
+              () {
+                final bool next = !c.monitoring;
+                Navigator.pop(ctx);
+                c.setMonitoring(next);
+              },
+            ),
             _menuItem(ctx, Icons.shield_outlined, 'Caller ID access', () async {
               Navigator.pop(ctx);
               await Bridge.invoke<bool>('requestCallerIdRole');
